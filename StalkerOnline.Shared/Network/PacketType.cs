@@ -13,6 +13,9 @@ public enum PacketType : ushort
     LoginRequest = 100,
     LoginResponse = 101,
 
+    RegisterRequest = 102,
+    RegisterResponse = 103,
+
     PlayerStateSnapshot = 200,
 
     MoveRequest = 300,

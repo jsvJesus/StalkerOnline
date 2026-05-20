@@ -148,6 +148,10 @@ public sealed class ClientSession
             case PacketType.Pong:
                 Console.WriteLine($"[PONG] SessionId={SessionId}");
                 break;
+            
+            case PacketType.RegisterRequest:
+                await HandleRegisterRequestAsync(packet);
+                break;
 
             case PacketType.LoginRequest:
                 await HandleLoginRequestAsync(packet);
@@ -237,6 +241,56 @@ public sealed class ClientSession
 
         await SendPlayerStateSnapshotAsync();
         await _onPlayerJoinedWorld(this);
+    }
+    
+    private async Task HandleRegisterRequestAsync(PacketMessage packet)
+    {
+        if (IsAuthorized)
+        {
+            Console.WriteLine($"[REGISTER IGNORED] SessionId={SessionId}, Reason=Already authorized");
+
+            await SendErrorMessageAsync(
+                "ALREADY_AUTHORIZED",
+                "You are already authorized.",
+                shouldDisconnect: false);
+
+            return;
+        }
+
+        PacketReader reader = new(packet.Payload);
+        RegisterRequest request = NetworkMessageSerializer.ReadRegisterRequest(reader);
+
+        Console.WriteLine(
+            $"[REGISTER REQUEST] SessionId={SessionId}, Login={request.Login}, Email={request.Email}");
+
+        RegisterResult result = _accountService.Register(
+            request.Login,
+            request.Email,
+            request.Password);
+
+        RegisterResponse response = new()
+        {
+            IsSuccess = result.IsSuccess,
+            AccountId = result.AccountId,
+            Login = result.Login,
+            Message = result.Message
+        };
+
+        PacketWriter writer = new();
+        NetworkMessageSerializer.WriteRegisterResponse(writer, response);
+
+        await SendPacketAsync(PacketType.RegisterResponse, writer.ToArray());
+
+        if (!result.IsSuccess)
+        {
+            Console.WriteLine(
+                $"[REGISTER FAILED] SessionId={SessionId}, Login={request.Login}, Reason={result.Message}");
+
+            return;
+        }
+
+        Console.WriteLine(
+            $"[REGISTER SUCCESS] SessionId={SessionId}, AccountId={result.AccountId}, Login={result.Login}");
     }
 
     private async Task HandleMoveRequestAsync(PacketMessage packet)

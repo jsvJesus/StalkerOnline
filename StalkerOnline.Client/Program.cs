@@ -11,12 +11,35 @@ const int port = 7777;
 Console.WriteLine("===================================");
 Console.WriteLine(" Stalker Online Client");
 Console.WriteLine("===================================");
+Console.WriteLine("1 - Login");
+Console.WriteLine("2 - Register");
+Console.WriteLine("===================================");
 
-Console.Write("Login: ");
-string login = Console.ReadLine() ?? string.Empty;
+bool shouldRegister = ReadAuthMode();
 
-Console.Write("Password: ");
-string password = Console.ReadLine() ?? string.Empty;
+string login;
+string email = string.Empty;
+string password;
+
+if (shouldRegister)
+{
+    Console.Write("New login: ");
+    login = Console.ReadLine() ?? string.Empty;
+
+    Console.Write("Email: ");
+    email = Console.ReadLine() ?? string.Empty;
+
+    Console.Write("New password: ");
+    password = Console.ReadLine() ?? string.Empty;
+}
+else
+{
+    Console.Write("Login: ");
+    login = Console.ReadLine() ?? string.Empty;
+
+    Console.Write("Password: ");
+    password = Console.ReadLine() ?? string.Empty;
+}
 
 try
 {
@@ -32,43 +55,37 @@ try
 
     SemaphoreSlim sendLock = new(1, 1);
 
-    PacketWriter loginWriter = new();
-    loginWriter.WriteString(login);
-    loginWriter.WriteString(password);
+    if (shouldRegister)
+    {
+        RegisterResponse registerResponse = await SendRegisterRequestAsync(
+            stream,
+            sendLock,
+            login,
+            email,
+            password);
 
-    await SendPacketAsync(
+        Console.WriteLine("-----------------------------------");
+        Console.WriteLine($"Register success: {registerResponse.IsSuccess}");
+        Console.WriteLine($"AccountId: {registerResponse.AccountId}");
+        Console.WriteLine($"Login: {registerResponse.Login}");
+        Console.WriteLine($"Message: {registerResponse.Message}");
+        Console.WriteLine("-----------------------------------");
+
+        if (!registerResponse.IsSuccess)
+            return;
+
+        login = registerResponse.Login;
+
+        Console.WriteLine("Auto login after registration...");
+    }
+
+    bool loginSuccess = await SendLoginRequestAsync(
         stream,
         sendLock,
-        PacketType.LoginRequest,
-        loginWriter.ToArray());
+        login,
+        password);
 
-    Console.WriteLine("LoginRequest sent.");
-
-    PacketMessage? loginResponse = await PacketProtocol.ReceiveAsync(stream);
-
-    if (loginResponse == null)
-    {
-        Console.WriteLine("Server closed connection.");
-        return;
-    }
-
-    if (loginResponse.Type != PacketType.LoginResponse)
-    {
-        Console.WriteLine($"Unexpected packet: {loginResponse.Type}");
-        return;
-    }
-
-    PacketReader loginReader = new(loginResponse.Payload);
-
-    bool success = loginReader.ReadBool();
-    string message = loginReader.ReadString();
-
-    Console.WriteLine("-----------------------------------");
-    Console.WriteLine($"Login success: {success}");
-    Console.WriteLine($"Message: {message}");
-    Console.WriteLine("-----------------------------------");
-
-    if (!success)
+    if (!loginSuccess)
         return;
 
     PacketMessage? playerStatePacket = await WaitForPlayerStateSnapshotAsync(stream);
@@ -167,6 +184,152 @@ catch (Exception ex)
 
 Console.WriteLine("Press ENTER to exit.");
 Console.ReadLine();
+
+static bool ReadAuthMode()
+{
+    while (true)
+    {
+        Console.Write("Select: ");
+        string input = Console.ReadLine() ?? string.Empty;
+
+        input = input.Trim();
+
+        if (input == "1")
+            return false;
+
+        if (input == "2")
+            return true;
+
+        Console.WriteLine("Unknown command. Use 1 or 2.");
+    }
+}
+
+static async Task<RegisterResponse> SendRegisterRequestAsync(
+    NetworkStream stream,
+    SemaphoreSlim sendLock,
+    string login,
+    string email,
+    string password)
+{
+    RegisterRequest request = new()
+    {
+        Login = login,
+        Email = email,
+        Password = password
+    };
+
+    PacketWriter writer = new();
+    NetworkMessageSerializer.WriteRegisterRequest(writer, request);
+
+    await SendPacketAsync(
+        stream,
+        sendLock,
+        PacketType.RegisterRequest,
+        writer.ToArray());
+
+    Console.WriteLine("RegisterRequest sent.");
+
+    while (true)
+    {
+        PacketMessage? packet = await PacketProtocol.ReceiveAsync(stream);
+
+        if (packet == null)
+        {
+            return new RegisterResponse
+            {
+                IsSuccess = false,
+                Message = "Server closed connection."
+            };
+        }
+
+        switch (packet.Type)
+        {
+            case PacketType.RegisterResponse:
+            {
+                PacketReader reader = new(packet.Payload);
+                return NetworkMessageSerializer.ReadRegisterResponse(reader);
+            }
+
+            case PacketType.ServerMessage:
+            {
+                PacketReader reader = new(packet.Payload);
+                ServerMessage serverMessage = NetworkMessageSerializer.ReadServerMessage(reader);
+
+                Console.WriteLine($"[SERVER MESSAGE] {serverMessage.Message}");
+                break;
+            }
+
+            case PacketType.ErrorMessage:
+            {
+                PacketReader reader = new(packet.Payload);
+                ErrorMessage errorMessage = NetworkMessageSerializer.ReadErrorMessage(reader);
+
+                Console.WriteLine(
+                    $"[ERROR] Code={errorMessage.Code}, Message={errorMessage.Message}, Disconnect={errorMessage.ShouldDisconnect}");
+
+                if (errorMessage.ShouldDisconnect)
+                {
+                    return new RegisterResponse
+                    {
+                        IsSuccess = false,
+                        Message = errorMessage.Message
+                    };
+                }
+
+                break;
+            }
+
+            default:
+                Console.WriteLine($"Unexpected packet before RegisterResponse: {packet.Type}");
+                break;
+        }
+    }
+}
+
+static async Task<bool> SendLoginRequestAsync(
+    NetworkStream stream,
+    SemaphoreSlim sendLock,
+    string login,
+    string password)
+{
+    PacketWriter loginWriter = new();
+    loginWriter.WriteString(login);
+    loginWriter.WriteString(password);
+
+    await SendPacketAsync(
+        stream,
+        sendLock,
+        PacketType.LoginRequest,
+        loginWriter.ToArray());
+
+    Console.WriteLine("LoginRequest sent.");
+
+    PacketMessage? loginResponse = await PacketProtocol.ReceiveAsync(stream);
+
+    if (loginResponse == null)
+    {
+        Console.WriteLine("Server closed connection.");
+        return false;
+    }
+
+    if (loginResponse.Type != PacketType.LoginResponse)
+    {
+        Console.WriteLine($"Unexpected packet: {loginResponse.Type}");
+        return false;
+    }
+
+    PacketReader loginReader = new(loginResponse.Payload);
+
+    bool success = loginReader.ReadBool();
+    string message = loginReader.ReadString();
+
+    Console.WriteLine("-----------------------------------");
+    Console.WriteLine($"Login success: {success}");
+    Console.WriteLine($"Message: {message}");
+    Console.WriteLine("-----------------------------------");
+
+    return success;
+}
 
 static async Task<PacketMessage?> WaitForPlayerStateSnapshotAsync(NetworkStream stream)
 {

@@ -18,6 +18,14 @@ public sealed class PacketRateLimiter
     private readonly Dictionary<PacketType, PacketRateRule> _rules = new()
     {
         {
+            PacketType.RegisterRequest,
+            new PacketRateRule(
+                PacketType.RegisterRequest,
+                maxPackets: 3,
+                window: TimeSpan.FromSeconds(30),
+                disconnectOnLimit: true)
+        },
+        {
             PacketType.LoginRequest,
             new PacketRateRule(
                 PacketType.LoginRequest,
