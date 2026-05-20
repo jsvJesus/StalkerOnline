@@ -11,6 +11,7 @@ public sealed class GameServer
     private readonly int _port;
 
     private readonly AccountService _accountService = new();
+    private readonly CharacterService _characterService = new();
 
     private readonly ConcurrentDictionary<int, ClientSession> _sessions = new();
 
@@ -44,6 +45,7 @@ public sealed class GameServer
                 sessionId,
                 tcpClient,
                 _accountService,
+                _characterService,
                 RemoveSession);
 
             if (!_sessions.TryAdd(sessionId, session))

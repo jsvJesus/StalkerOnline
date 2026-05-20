@@ -1,10 +1,11 @@
 ﻿using System.Net.Sockets;
+using StalkerOnline.Shared.Game;
 using StalkerOnline.Shared.Network;
 
 Console.Title = "Stalker Online Client";
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-const string host = "26.163.92.76"; // Local IP
+const string host = "26.163.92.76";
 const int port = 7777;
 
 Console.WriteLine("===================================");
@@ -40,29 +41,64 @@ try
 
     Console.WriteLine("LoginRequest sent.");
 
-    PacketMessage? response = await PacketProtocol.ReceiveAsync(stream);
+    PacketMessage? loginResponse = await PacketProtocol.ReceiveAsync(stream);
 
-    if (response == null)
+    if (loginResponse == null)
     {
         Console.WriteLine("Server closed connection.");
         return;
     }
 
-    if (response.Type != PacketType.LoginResponse)
+    if (loginResponse.Type != PacketType.LoginResponse)
     {
-        Console.WriteLine($"Unexpected packet: {response.Type}");
+        Console.WriteLine($"Unexpected packet: {loginResponse.Type}");
         return;
     }
 
-    PacketReader reader = new(response.Payload);
+    PacketReader loginReader = new(loginResponse.Payload);
 
-    bool success = reader.ReadBool();
-    string message = reader.ReadString();
+    bool success = loginReader.ReadBool();
+    string message = loginReader.ReadString();
 
     Console.WriteLine("-----------------------------------");
     Console.WriteLine($"Login success: {success}");
     Console.WriteLine($"Message: {message}");
     Console.WriteLine("-----------------------------------");
+
+    if (!success)
+        return;
+
+    PacketMessage? playerStatePacket = await PacketProtocol.ReceiveAsync(stream);
+
+    if (playerStatePacket == null)
+    {
+        Console.WriteLine("Server closed connection before PlayerStateSnapshot.");
+        return;
+    }
+
+    if (playerStatePacket.Type != PacketType.PlayerStateSnapshot)
+    {
+        Console.WriteLine($"Unexpected packet: {playerStatePacket.Type}");
+        return;
+    }
+
+    PacketReader playerStateReader = new(playerStatePacket.Payload);
+    PlayerState playerState = PlayerStateSerializer.Read(playerStateReader);
+
+    Console.WriteLine("=========== PLAYER STATE ===========");
+    Console.WriteLine($"AccountId:   {playerState.AccountId}");
+    Console.WriteLine($"CharacterId: {playerState.CharacterId}");
+    Console.WriteLine($"Nickname:    {playerState.Nickname}");
+    Console.WriteLine($"Position:    {playerState.Position}");
+    Console.WriteLine($"Rotation:    {playerState.Rotation}");
+    Console.WriteLine($"Health:      {playerState.Health}/{playerState.MaxHealth}");
+    Console.WriteLine($"Stamina:     {playerState.Stamina}/{playerState.MaxStamina}");
+    Console.WriteLine($"Hunger:      {playerState.Hunger}");
+    Console.WriteLine($"Thirst:      {playerState.Thirst}");
+    Console.WriteLine($"Radiation:   {playerState.Radiation}");
+    Console.WriteLine($"Toxicity:    {playerState.Toxicity}");
+    Console.WriteLine($"IsAlive:     {playerState.IsAlive}");
+    Console.WriteLine("====================================");
 }
 catch (Exception ex)
 {

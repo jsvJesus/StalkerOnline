@@ -1,5 +1,7 @@
 using System.Net.Sockets;
+using StalkerOnline.Server.Game;
 using StalkerOnline.Server.Services;
+using StalkerOnline.Shared.Game;
 using StalkerOnline.Shared.Network;
 
 namespace StalkerOnline.Server.Core;
@@ -8,6 +10,7 @@ public sealed class ClientSession
 {
     private readonly TcpClient _client;
     private readonly AccountService _accountService;
+    private readonly CharacterService _characterService;
     private readonly Action<ClientSession> _onDisconnected;
 
     private NetworkStream? _stream;
@@ -19,15 +22,19 @@ public sealed class ClientSession
     public int AccountId { get; private set; }
     public string Login { get; private set; } = string.Empty;
 
+    public PlayerConnection? PlayerConnection { get; private set; }
+
     public ClientSession(
         int sessionId,
         TcpClient client,
         AccountService accountService,
+        CharacterService characterService,
         Action<ClientSession> onDisconnected)
     {
         SessionId = sessionId;
         _client = client;
         _accountService = accountService;
+        _characterService = characterService;
         _onDisconnected = onDisconnected;
 
         RemoteAddress = _client.Client.RemoteEndPoint?.ToString() ?? "unknown";
@@ -50,6 +57,8 @@ public sealed class ClientSession
                     Console.WriteLine($"[DISCONNECT] SessionId={SessionId}, IP={RemoteAddress}");
                     break;
                 }
+
+                PlayerConnection?.Touch();
 
                 await HandlePacketAsync(packet);
             }
@@ -94,6 +103,12 @@ public sealed class ClientSession
 
     private async Task HandleLoginRequestAsync(PacketMessage packet)
     {
+        if (IsAuthorized)
+        {
+            Console.WriteLine($"[LOGIN IGNORED] SessionId={SessionId}, Reason=Already authorized");
+            return;
+        }
+
         PacketReader reader = new(packet.Payload);
 
         string login = reader.ReadString();
@@ -103,24 +118,48 @@ public sealed class ClientSession
 
         LoginResult result = _accountService.ValidateLogin(login, password);
 
-        if (result.IsSuccess)
-        {
-            IsAuthorized = true;
-            AccountId = result.AccountId;
-            Login = result.Login;
+        PacketWriter loginResponseWriter = new();
+        loginResponseWriter.WriteBool(result.IsSuccess);
+        loginResponseWriter.WriteString(result.Message);
 
-            Console.WriteLine($"[LOGIN SUCCESS] SessionId={SessionId}, AccountId={AccountId}, Login={Login}");
-        }
-        else
+        await SendAsync(PacketType.LoginResponse, loginResponseWriter.ToArray());
+
+        if (!result.IsSuccess)
         {
             Console.WriteLine($"[LOGIN FAILED] SessionId={SessionId}, Login={login}, Reason={result.Message}");
+            return;
         }
 
-        PacketWriter writer = new();
-        writer.WriteBool(result.IsSuccess);
-        writer.WriteString(result.Message);
+        IsAuthorized = true;
+        AccountId = result.AccountId;
+        Login = result.Login;
 
-        await SendAsync(PacketType.LoginResponse, writer.ToArray());
+        PlayerState playerState = _characterService.LoadOrCreatePlayerState(AccountId, Login);
+
+        PlayerConnection = new PlayerConnection(
+            SessionId,
+            AccountId,
+            Login,
+            playerState);
+
+        Console.WriteLine($"[LOGIN SUCCESS] SessionId={SessionId}, AccountId={AccountId}, Login={Login}");
+        Console.WriteLine($"[PLAYER CREATED] SessionId={SessionId}, CharacterId={playerState.CharacterId}, Nickname={playerState.Nickname}");
+
+        await SendPlayerStateSnapshotAsync();
+    }
+
+    private async Task SendPlayerStateSnapshotAsync()
+    {
+        if (PlayerConnection == null)
+            return;
+
+        PacketWriter writer = new();
+
+        PlayerStateSerializer.Write(writer, PlayerConnection.State);
+
+        await SendAsync(PacketType.PlayerStateSnapshot, writer.ToArray());
+
+        Console.WriteLine($"[PLAYER STATE SENT] SessionId={SessionId}, CharacterId={PlayerConnection.State.CharacterId}");
     }
 
     private async Task SendAsync(PacketType type, byte[] payload)

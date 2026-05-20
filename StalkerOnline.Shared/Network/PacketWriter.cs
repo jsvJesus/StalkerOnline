@@ -26,6 +26,13 @@ public sealed class PacketWriter
         _buffer.AddRange(bytes.ToArray());
     }
 
+    public void WriteFloat(float value)
+    {
+        Span<byte> bytes = stackalloc byte[4];
+        BinaryPrimitives.WriteSingleLittleEndian(bytes, value);
+        _buffer.AddRange(bytes.ToArray());
+    }
+
     public void WriteString(string value)
     {
         byte[] bytes = Encoding.UTF8.GetBytes(value);

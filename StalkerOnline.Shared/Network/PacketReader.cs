@@ -44,6 +44,16 @@ public sealed class PacketReader
         return value;
     }
 
+    public float ReadFloat()
+    {
+        EnsureAvailable(4);
+
+        float value = BinaryPrimitives.ReadSingleLittleEndian(_buffer.AsSpan(_offset, 4));
+        _offset += 4;
+
+        return value;
+    }
+
     public string ReadString()
     {
         int length = ReadInt32();
