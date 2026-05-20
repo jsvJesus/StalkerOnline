@@ -12,7 +12,10 @@ public sealed class ClientSession
     private readonly AccountService _accountService;
     private readonly CharacterService _characterService;
     private readonly GameWorld _gameWorld;
+    private readonly Func<ClientSession, PlayerPositionUpdate, Task> _onPlayerPositionChanged;
     private readonly Action<ClientSession> _onDisconnected;
+
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     private NetworkStream? _stream;
     private bool _removedFromWorld;
@@ -32,6 +35,7 @@ public sealed class ClientSession
         AccountService accountService,
         CharacterService characterService,
         GameWorld gameWorld,
+        Func<ClientSession, PlayerPositionUpdate, Task> onPlayerPositionChanged,
         Action<ClientSession> onDisconnected)
     {
         SessionId = sessionId;
@@ -39,6 +43,7 @@ public sealed class ClientSession
         _accountService = accountService;
         _characterService = characterService;
         _gameWorld = gameWorld;
+        _onPlayerPositionChanged = onPlayerPositionChanged;
         _onDisconnected = onDisconnected;
 
         RemoteAddress = _client.Client.RemoteEndPoint?.ToString() ?? "unknown";
@@ -132,7 +137,7 @@ public sealed class ClientSession
         loginResponseWriter.WriteBool(result.IsSuccess);
         loginResponseWriter.WriteString(result.Message);
 
-        await SendAsync(PacketType.LoginResponse, loginResponseWriter.ToArray());
+        await SendPacketAsync(PacketType.LoginResponse, loginResponseWriter.ToArray());
 
         if (!result.IsSuccess)
         {
@@ -182,7 +187,8 @@ public sealed class ClientSession
         PacketWriter writer = new();
         PlayerMovementSerializer.WritePositionUpdate(writer, positionUpdate);
 
-        await SendAsync(PacketType.PlayerPositionUpdate, writer.ToArray());
+        await SendPacketAsync(PacketType.PlayerPositionUpdate, writer.ToArray());
+        await _onPlayerPositionChanged(this, positionUpdate);
 
         Console.WriteLine(
             $"[MOVE] SessionId={SessionId}, CharacterId={positionUpdate.CharacterId}, Position={positionUpdate.Position}, Rotation={positionUpdate.Rotation}");
@@ -197,17 +203,31 @@ public sealed class ClientSession
 
         PlayerStateSerializer.Write(writer, PlayerConnection.State);
 
-        await SendAsync(PacketType.PlayerStateSnapshot, writer.ToArray());
+        await SendPacketAsync(PacketType.PlayerStateSnapshot, writer.ToArray());
 
         Console.WriteLine($"[PLAYER STATE SENT] SessionId={SessionId}, CharacterId={PlayerConnection.State.CharacterId}");
     }
 
-    private async Task SendAsync(PacketType type, byte[] payload)
+    public async Task SendPacketAsync(PacketType type, byte[] payload)
     {
         if (_stream == null)
             return;
 
-        await PacketProtocol.SendAsync(_stream, type, payload);
+        await _sendLock.WaitAsync();
+
+        try
+        {
+            await PacketProtocol.SendAsync(_stream, type, payload);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SEND ERROR] SessionId={SessionId}, Type={type}, Message={ex.Message}");
+            Close();
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
     }
 
     private void RemoveFromWorldIfNeeded()

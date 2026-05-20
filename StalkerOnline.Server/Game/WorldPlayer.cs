@@ -62,14 +62,25 @@ public sealed class WorldPlayer
         }
     }
 
+    public NetVector3 GetPosition()
+    {
+        lock (_lock)
+        {
+            return State.Position;
+        }
+    }
+
     public PlayerPositionUpdate CreatePositionUpdate()
     {
-        return new PlayerPositionUpdate
+        lock (_lock)
         {
-            CharacterId = State.CharacterId,
-            Position = State.Position,
-            Rotation = State.Rotation
-        };
+            return new PlayerPositionUpdate
+            {
+                CharacterId = State.CharacterId,
+                Position = State.Position,
+                Rotation = State.Rotation
+            };
+        }
     }
 
     private static float SanitizeDeltaTime(float deltaTime)
@@ -88,7 +99,6 @@ public sealed class WorldPlayer
         float x = SanitizeFloat(direction.X);
         float y = SanitizeFloat(direction.Y);
 
-        // Пока делаем top-down движение только по X/Y.
         float length = MathF.Sqrt(x * x + y * y);
 
         if (length <= 0.0001f)

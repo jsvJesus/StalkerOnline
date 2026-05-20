@@ -11,6 +11,7 @@ public enum PacketType : ushort
 
     MoveRequest = 300,
     PlayerPositionUpdate = 301,
+    PlayerPositionBroadcast = 302,
 
     Disconnect = 900
 }

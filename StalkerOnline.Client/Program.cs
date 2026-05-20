@@ -236,6 +236,17 @@ static async Task ReceiveLoopAsync(NetworkStream stream, CancellationToken cance
                     break;
                 }
 
+                case PacketType.PlayerPositionBroadcast:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    PlayerPositionUpdate update = PlayerMovementSerializer.ReadPositionUpdate(reader);
+
+                    Console.WriteLine(
+                        $"[POSITION BROADCAST] CharacterId={update.CharacterId}, Position={update.Position}, Rotation={update.Rotation}");
+
+                    break;
+                }
+
                 case PacketType.PlayerStateSnapshot:
                 {
                     PacketReader reader = new(packet.Payload);
