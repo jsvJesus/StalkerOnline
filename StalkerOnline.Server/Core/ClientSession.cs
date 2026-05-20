@@ -8,6 +8,8 @@ namespace StalkerOnline.Server.Core;
 
 public sealed class ClientSession
 {
+    private static readonly TimeSpan RateLimitErrorMessageCooldown = TimeSpan.FromSeconds(3);
+
     private readonly TcpClient _client;
     private readonly AccountService _accountService;
     private readonly CharacterService _characterService;
@@ -23,6 +25,8 @@ public sealed class ClientSession
     private NetworkStream? _stream;
     private bool _removedFromWorld;
     private int _closed;
+
+    private DateTime _lastRateLimitErrorSentAtUtc = DateTime.MinValue;
 
     public int SessionId { get; }
     public string RemoteAddress { get; }
@@ -92,6 +96,11 @@ public sealed class ClientSession
 
                     if (rateLimitResult.ShouldDisconnect)
                     {
+                        await SendErrorMessageAsync(
+                            "RATE_LIMIT_DISCONNECT",
+                            "Too many packets. Connection closed.",
+                            shouldDisconnect: true);
+
                         Console.WriteLine(
                             $"[RATE LIMIT DISCONNECT] SessionId={SessionId}, IP={RemoteAddress}");
 
@@ -99,6 +108,7 @@ public sealed class ClientSession
                         break;
                     }
 
+                    await SendRateLimitErrorIfAllowedAsync(rateLimitResult.Reason);
                     continue;
                 }
 
@@ -155,6 +165,12 @@ public sealed class ClientSession
 
             default:
                 Console.WriteLine($"[UNKNOWN PACKET] SessionId={SessionId}, Type={packet.Type}");
+
+                await SendErrorMessageAsync(
+                    "UNKNOWN_PACKET",
+                    $"Unknown packet type: {packet.Type}",
+                    shouldDisconnect: false);
+
                 break;
         }
     }
@@ -164,6 +180,12 @@ public sealed class ClientSession
         if (IsAuthorized)
         {
             Console.WriteLine($"[LOGIN IGNORED] SessionId={SessionId}, Reason=Already authorized");
+
+            await SendErrorMessageAsync(
+                "ALREADY_AUTHORIZED",
+                "You are already authorized.",
+                shouldDisconnect: false);
+
             return;
         }
 
@@ -185,6 +207,12 @@ public sealed class ClientSession
         if (!result.IsSuccess)
         {
             Console.WriteLine($"[LOGIN FAILED] SessionId={SessionId}, Login={login}, Reason={result.Message}");
+
+            await SendErrorMessageAsync(
+                "LOGIN_FAILED",
+                result.Message,
+                shouldDisconnect: false);
+
             return;
         }
 
@@ -205,6 +233,8 @@ public sealed class ClientSession
         Console.WriteLine($"[LOGIN SUCCESS] SessionId={SessionId}, AccountId={AccountId}, Login={Login}");
         Console.WriteLine($"[PLAYER CREATED] SessionId={SessionId}, CharacterId={playerState.CharacterId}, Nickname={playerState.Nickname}");
 
+        await SendServerMessageAsync($"Welcome to Stalker Online, {Login}.");
+
         await SendPlayerStateSnapshotAsync();
         await _onPlayerJoinedWorld(this);
     }
@@ -214,6 +244,12 @@ public sealed class ClientSession
         if (!IsAuthorized || PlayerConnection == null)
         {
             Console.WriteLine($"[MOVE IGNORED] SessionId={SessionId}, Reason=Not authorized");
+
+            await SendErrorMessageAsync(
+                "NOT_AUTHORIZED",
+                "You must login before sending movement.",
+                shouldDisconnect: false);
+
             return;
         }
 
@@ -225,6 +261,12 @@ public sealed class ClientSession
         if (positionUpdate == null)
         {
             Console.WriteLine($"[MOVE IGNORED] SessionId={SessionId}, Reason=Player not found in world");
+
+            await SendErrorMessageAsync(
+                "PLAYER_NOT_IN_WORLD",
+                "Player was not found in world.",
+                shouldDisconnect: false);
+
             return;
         }
 
@@ -255,6 +297,52 @@ public sealed class ClientSession
     public async Task SendPingAsync()
     {
         await SendPacketAsync(PacketType.Ping, Array.Empty<byte>());
+    }
+
+    public async Task SendServerMessageAsync(string message)
+    {
+        ServerMessage serverMessage = new()
+        {
+            Message = message
+        };
+
+        PacketWriter writer = new();
+        NetworkMessageSerializer.WriteServerMessage(writer, serverMessage);
+
+        await SendPacketAsync(PacketType.ServerMessage, writer.ToArray());
+    }
+
+    public async Task SendErrorMessageAsync(
+        string code,
+        string message,
+        bool shouldDisconnect)
+    {
+        ErrorMessage errorMessage = new()
+        {
+            Code = code,
+            Message = message,
+            ShouldDisconnect = shouldDisconnect
+        };
+
+        PacketWriter writer = new();
+        NetworkMessageSerializer.WriteErrorMessage(writer, errorMessage);
+
+        await SendPacketAsync(PacketType.ErrorMessage, writer.ToArray());
+    }
+
+    private async Task SendRateLimitErrorIfAllowedAsync(string reason)
+    {
+        DateTime now = DateTime.UtcNow;
+
+        if (now - _lastRateLimitErrorSentAtUtc < RateLimitErrorMessageCooldown)
+            return;
+
+        _lastRateLimitErrorSentAtUtc = now;
+
+        await SendErrorMessageAsync(
+            "RATE_LIMIT",
+            $"Too many packets. {reason}",
+            shouldDisconnect: false);
     }
 
     public async Task SendPacketAsync(PacketType type, byte[] payload)

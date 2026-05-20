@@ -7,6 +7,9 @@ public enum PacketType : ushort
     Ping = 10,
     Pong = 11,
 
+    ServerMessage = 20,
+    ErrorMessage = 21,
+
     LoginRequest = 100,
     LoginResponse = 101,
 

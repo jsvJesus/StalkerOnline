@@ -71,17 +71,11 @@ try
     if (!success)
         return;
 
-    PacketMessage? playerStatePacket = await PacketProtocol.ReceiveAsync(stream);
+    PacketMessage? playerStatePacket = await WaitForPlayerStateSnapshotAsync(stream);
 
     if (playerStatePacket == null)
     {
         Console.WriteLine("Server closed connection before PlayerStateSnapshot.");
-        return;
-    }
-
-    if (playerStatePacket.Type != PacketType.PlayerStateSnapshot)
-    {
-        Console.WriteLine($"Unexpected packet: {playerStatePacket.Type}");
         return;
     }
 
@@ -174,6 +168,50 @@ catch (Exception ex)
 Console.WriteLine("Press ENTER to exit.");
 Console.ReadLine();
 
+static async Task<PacketMessage?> WaitForPlayerStateSnapshotAsync(NetworkStream stream)
+{
+    while (true)
+    {
+        PacketMessage? packet = await PacketProtocol.ReceiveAsync(stream);
+
+        if (packet == null)
+            return null;
+
+        switch (packet.Type)
+        {
+            case PacketType.PlayerStateSnapshot:
+                return packet;
+
+            case PacketType.ServerMessage:
+            {
+                PacketReader reader = new(packet.Payload);
+                ServerMessage serverMessage = NetworkMessageSerializer.ReadServerMessage(reader);
+
+                Console.WriteLine($"[SERVER MESSAGE] {serverMessage.Message}");
+                break;
+            }
+
+            case PacketType.ErrorMessage:
+            {
+                PacketReader reader = new(packet.Payload);
+                ErrorMessage errorMessage = NetworkMessageSerializer.ReadErrorMessage(reader);
+
+                Console.WriteLine(
+                    $"[ERROR] Code={errorMessage.Code}, Message={errorMessage.Message}, Disconnect={errorMessage.ShouldDisconnect}");
+
+                if (errorMessage.ShouldDisconnect)
+                    return null;
+
+                break;
+            }
+
+            default:
+                Console.WriteLine($"Unexpected packet before PlayerStateSnapshot: {packet.Type}");
+                break;
+        }
+    }
+}
+
 static PlayerMovementInput? BuildMovementInput(ConsoleKeyInfo keyInfo, ref float rotationZ)
 {
     NetVector3 direction = NetVector3.Zero;
@@ -258,6 +296,29 @@ static async Task ReceiveLoopAsync(
                 case PacketType.Pong:
                     Console.WriteLine("[PONG]");
                     break;
+
+                case PacketType.ServerMessage:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    ServerMessage serverMessage = NetworkMessageSerializer.ReadServerMessage(reader);
+
+                    Console.WriteLine($"[SERVER MESSAGE] {serverMessage.Message}");
+                    break;
+                }
+
+                case PacketType.ErrorMessage:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    ErrorMessage errorMessage = NetworkMessageSerializer.ReadErrorMessage(reader);
+
+                    Console.WriteLine(
+                        $"[ERROR] Code={errorMessage.Code}, Message={errorMessage.Message}, Disconnect={errorMessage.ShouldDisconnect}");
+
+                    if (errorMessage.ShouldDisconnect)
+                        return;
+
+                    break;
+                }
 
                 case PacketType.PlayerSpawn:
                 {
