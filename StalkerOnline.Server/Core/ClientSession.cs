@@ -440,6 +440,16 @@ public sealed class ClientSession
 
         _removedFromWorld = true;
 
+        try
+        {
+            _characterService.SavePlayerState(PlayerConnection.State);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(
+                $"[CHARACTER SAVE ERROR] SessionId={SessionId}, AccountId={AccountId}, Message={ex.Message}");
+        }
+
         await _onPlayerLeavingWorld(this);
 
         _gameWorld.RemovePlayer(SessionId);

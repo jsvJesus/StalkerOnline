@@ -25,7 +25,9 @@ public sealed class GameServer
     private readonly AccountRepository _accountRepository;
     private readonly AccountService _accountService;
 
-    private readonly CharacterService _characterService = new();
+    private readonly CharacterRepository _characterRepository;
+    private readonly CharacterService _characterService;
+
     private readonly GameWorld _gameWorld = new();
 
     private readonly ConcurrentDictionary<int, ClientSession> _sessions = new();
@@ -40,8 +42,12 @@ public sealed class GameServer
 
         _databaseConfig = DatabaseConfig.Load("database.json");
         _databaseConnectionFactory = new DatabaseConnectionFactory(_databaseConfig);
+
         _accountRepository = new AccountRepository(_databaseConnectionFactory);
         _accountService = new AccountService(_accountRepository);
+
+        _characterRepository = new CharacterRepository(_databaseConnectionFactory);
+        _characterService = new CharacterService(_characterRepository);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
