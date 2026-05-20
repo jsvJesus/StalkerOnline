@@ -18,6 +18,7 @@ public sealed class ClientSession
     private readonly Action<ClientSession> _onDisconnected;
 
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly PacketRateLimiter _rateLimiter = new();
 
     private NetworkStream? _stream;
     private bool _removedFromWorld;
@@ -80,6 +81,25 @@ public sealed class ClientSession
                 {
                     Console.WriteLine($"[DISCONNECT] SessionId={SessionId}, IP={RemoteAddress}");
                     break;
+                }
+
+                PacketRateLimitResult rateLimitResult = _rateLimiter.Check(packet.Type);
+
+                if (!rateLimitResult.IsAllowed)
+                {
+                    Console.WriteLine(
+                        $"[RATE LIMIT] SessionId={SessionId}, IP={RemoteAddress}, Reason={rateLimitResult.Reason}");
+
+                    if (rateLimitResult.ShouldDisconnect)
+                    {
+                        Console.WriteLine(
+                            $"[RATE LIMIT DISCONNECT] SessionId={SessionId}, IP={RemoteAddress}");
+
+                        Close();
+                        break;
+                    }
+
+                    continue;
                 }
 
                 Touch();
