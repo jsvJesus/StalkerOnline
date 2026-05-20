@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using StalkerOnline.Server.Game;
 using StalkerOnline.Server.Services;
 
 namespace StalkerOnline.Server.Core;
@@ -12,6 +13,7 @@ public sealed class GameServer
 
     private readonly AccountService _accountService = new();
     private readonly CharacterService _characterService = new();
+    private readonly GameWorld _gameWorld = new();
 
     private readonly ConcurrentDictionary<int, ClientSession> _sessions = new();
 
@@ -46,6 +48,7 @@ public sealed class GameServer
                 tcpClient,
                 _accountService,
                 _characterService,
+                _gameWorld,
                 RemoveSession);
 
             if (!_sessions.TryAdd(sessionId, session))
@@ -79,6 +82,7 @@ public sealed class GameServer
         }
 
         _sessions.Clear();
+        _gameWorld.Clear();
 
         _listener?.Stop();
 

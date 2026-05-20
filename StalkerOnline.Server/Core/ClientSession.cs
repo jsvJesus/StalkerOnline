@@ -11,9 +11,11 @@ public sealed class ClientSession
     private readonly TcpClient _client;
     private readonly AccountService _accountService;
     private readonly CharacterService _characterService;
+    private readonly GameWorld _gameWorld;
     private readonly Action<ClientSession> _onDisconnected;
 
     private NetworkStream? _stream;
+    private bool _removedFromWorld;
 
     public int SessionId { get; }
     public string RemoteAddress { get; }
@@ -29,12 +31,14 @@ public sealed class ClientSession
         TcpClient client,
         AccountService accountService,
         CharacterService characterService,
+        GameWorld gameWorld,
         Action<ClientSession> onDisconnected)
     {
         SessionId = sessionId;
         _client = client;
         _accountService = accountService;
         _characterService = characterService;
+        _gameWorld = gameWorld;
         _onDisconnected = onDisconnected;
 
         RemoteAddress = _client.Client.RemoteEndPoint?.ToString() ?? "unknown";
@@ -77,6 +81,7 @@ public sealed class ClientSession
         }
         finally
         {
+            RemoveFromWorldIfNeeded();
             Close();
             _onDisconnected(this);
         }
@@ -90,8 +95,13 @@ public sealed class ClientSession
                 await HandleLoginRequestAsync(packet);
                 break;
 
+            case PacketType.MoveRequest:
+                await HandleMoveRequestAsync(packet);
+                break;
+
             case PacketType.Disconnect:
                 Console.WriteLine($"[CLIENT DISCONNECT REQUEST] SessionId={SessionId}");
+                RemoveFromWorldIfNeeded();
                 Close();
                 break;
 
@@ -142,10 +152,40 @@ public sealed class ClientSession
             Login,
             playerState);
 
+        _gameWorld.AddPlayer(PlayerConnection);
+
         Console.WriteLine($"[LOGIN SUCCESS] SessionId={SessionId}, AccountId={AccountId}, Login={Login}");
         Console.WriteLine($"[PLAYER CREATED] SessionId={SessionId}, CharacterId={playerState.CharacterId}, Nickname={playerState.Nickname}");
 
         await SendPlayerStateSnapshotAsync();
+    }
+
+    private async Task HandleMoveRequestAsync(PacketMessage packet)
+    {
+        if (!IsAuthorized || PlayerConnection == null)
+        {
+            Console.WriteLine($"[MOVE IGNORED] SessionId={SessionId}, Reason=Not authorized");
+            return;
+        }
+
+        PacketReader reader = new(packet.Payload);
+        PlayerMovementInput input = PlayerMovementSerializer.ReadMoveRequest(reader);
+
+        PlayerPositionUpdate? positionUpdate = _gameWorld.ApplyMovement(SessionId, input);
+
+        if (positionUpdate == null)
+        {
+            Console.WriteLine($"[MOVE IGNORED] SessionId={SessionId}, Reason=Player not found in world");
+            return;
+        }
+
+        PacketWriter writer = new();
+        PlayerMovementSerializer.WritePositionUpdate(writer, positionUpdate);
+
+        await SendAsync(PacketType.PlayerPositionUpdate, writer.ToArray());
+
+        Console.WriteLine(
+            $"[MOVE] SessionId={SessionId}, CharacterId={positionUpdate.CharacterId}, Position={positionUpdate.Position}, Rotation={positionUpdate.Rotation}");
     }
 
     private async Task SendPlayerStateSnapshotAsync()
@@ -168,6 +208,18 @@ public sealed class ClientSession
             return;
 
         await PacketProtocol.SendAsync(_stream, type, payload);
+    }
+
+    private void RemoveFromWorldIfNeeded()
+    {
+        if (_removedFromWorld)
+            return;
+
+        if (PlayerConnection == null)
+            return;
+
+        _removedFromWorld = true;
+        _gameWorld.RemovePlayer(SessionId);
     }
 
     public void Close()
