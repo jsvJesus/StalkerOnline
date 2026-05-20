@@ -30,12 +30,15 @@ try
 
     await using NetworkStream stream = client.GetStream();
 
+    SemaphoreSlim sendLock = new(1, 1);
+
     PacketWriter loginWriter = new();
     loginWriter.WriteString(login);
     loginWriter.WriteString(password);
 
-    await PacketProtocol.SendAsync(
+    await SendPacketAsync(
         stream,
+        sendLock,
         PacketType.LoginRequest,
         loginWriter.ToArray());
 
@@ -106,6 +109,7 @@ try
 
     Task receiveTask = ReceiveLoopAsync(
         stream,
+        sendLock,
         playerState.CharacterId,
         remotePlayers,
         networkCts.Token);
@@ -125,8 +129,9 @@ try
 
         if (keyInfo.Key == ConsoleKey.Escape)
         {
-            await PacketProtocol.SendAsync(
+            await SendPacketAsync(
                 stream,
+                sendLock,
                 PacketType.Disconnect,
                 Array.Empty<byte>());
 
@@ -144,8 +149,9 @@ try
         PacketWriter movementWriter = new();
         PlayerMovementSerializer.WriteMoveRequest(movementWriter, input);
 
-        await PacketProtocol.SendAsync(
+        await SendPacketAsync(
             stream,
+            sendLock,
             PacketType.MoveRequest,
             movementWriter.ToArray(),
             networkCts.Token);
@@ -217,6 +223,7 @@ static PlayerMovementInput? BuildMovementInput(ConsoleKeyInfo keyInfo, ref float
 
 static async Task ReceiveLoopAsync(
     NetworkStream stream,
+    SemaphoreSlim sendLock,
     int localCharacterId,
     Dictionary<int, PlayerSpawnInfo> remotePlayers,
     CancellationToken cancellationToken)
@@ -235,6 +242,23 @@ static async Task ReceiveLoopAsync(
 
             switch (packet.Type)
             {
+                case PacketType.Ping:
+                {
+                    await SendPacketAsync(
+                        stream,
+                        sendLock,
+                        PacketType.Pong,
+                        Array.Empty<byte>(),
+                        cancellationToken);
+
+                    Console.WriteLine("[PING] -> [PONG]");
+                    break;
+                }
+
+                case PacketType.Pong:
+                    Console.WriteLine("[PONG]");
+                    break;
+
                 case PacketType.PlayerSpawn:
                 {
                     PacketReader reader = new(packet.Payload);
@@ -324,5 +348,24 @@ static async Task ReceiveLoopAsync(
     catch (Exception ex)
     {
         Console.WriteLine($"[CLIENT RECEIVE ERROR] {ex.Message}");
+    }
+}
+
+static async Task SendPacketAsync(
+    NetworkStream stream,
+    SemaphoreSlim sendLock,
+    PacketType type,
+    byte[] payload,
+    CancellationToken cancellationToken = default)
+{
+    await sendLock.WaitAsync(cancellationToken);
+
+    try
+    {
+        await PacketProtocol.SendAsync(stream, type, payload, cancellationToken);
+    }
+    finally
+    {
+        sendLock.Release();
     }
 }

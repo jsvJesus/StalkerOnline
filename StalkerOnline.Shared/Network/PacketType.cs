@@ -4,6 +4,9 @@ public enum PacketType : ushort
 {
     None = 0,
 
+    Ping = 10,
+    Pong = 11,
+
     LoginRequest = 100,
     LoginResponse = 101,
 

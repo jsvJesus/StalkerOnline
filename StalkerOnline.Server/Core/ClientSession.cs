@@ -21,9 +21,15 @@ public sealed class ClientSession
 
     private NetworkStream? _stream;
     private bool _removedFromWorld;
+    private int _closed;
 
     public int SessionId { get; }
     public string RemoteAddress { get; }
+
+    public DateTime ConnectedAtUtc { get; }
+    public DateTime LastPacketAtUtc { get; private set; }
+
+    public bool IsClosed => Volatile.Read(ref _closed) == 1;
 
     public bool IsAuthorized { get; private set; }
     public int AccountId { get; private set; }
@@ -52,6 +58,9 @@ public sealed class ClientSession
         _onPlayerLeavingWorld = onPlayerLeavingWorld;
         _onDisconnected = onDisconnected;
 
+        ConnectedAtUtc = DateTime.UtcNow;
+        LastPacketAtUtc = ConnectedAtUtc;
+
         RemoteAddress = _client.Client.RemoteEndPoint?.ToString() ?? "unknown";
     }
 
@@ -63,7 +72,7 @@ public sealed class ClientSession
         {
             _stream = _client.GetStream();
 
-            while (_client.Connected)
+            while (_client.Connected && !IsClosed)
             {
                 PacketMessage? packet = await PacketProtocol.ReceiveAsync(_stream);
 
@@ -73,7 +82,7 @@ public sealed class ClientSession
                     break;
                 }
 
-                PlayerConnection?.Touch();
+                Touch();
 
                 await HandlePacketAsync(packet);
             }
@@ -102,6 +111,14 @@ public sealed class ClientSession
     {
         switch (packet.Type)
         {
+            case PacketType.Ping:
+                await SendPacketAsync(PacketType.Pong, Array.Empty<byte>());
+                break;
+
+            case PacketType.Pong:
+                Console.WriteLine($"[PONG] SessionId={SessionId}");
+                break;
+
             case PacketType.LoginRequest:
                 await HandleLoginRequestAsync(packet);
                 break;
@@ -215,15 +232,23 @@ public sealed class ClientSession
         Console.WriteLine($"[PLAYER STATE SENT] SessionId={SessionId}, CharacterId={PlayerConnection.State.CharacterId}");
     }
 
+    public async Task SendPingAsync()
+    {
+        await SendPacketAsync(PacketType.Ping, Array.Empty<byte>());
+    }
+
     public async Task SendPacketAsync(PacketType type, byte[] payload)
     {
-        if (_stream == null)
+        if (_stream == null || IsClosed)
             return;
 
         await _sendLock.WaitAsync();
 
         try
         {
+            if (_stream == null || IsClosed)
+                return;
+
             await PacketProtocol.SendAsync(_stream, type, payload);
         }
         catch (Exception ex)
@@ -235,6 +260,12 @@ public sealed class ClientSession
         {
             _sendLock.Release();
         }
+    }
+
+    private void Touch()
+    {
+        LastPacketAtUtc = DateTime.UtcNow;
+        PlayerConnection?.Touch();
     }
 
     private async Task RemoveFromWorldIfNeededAsync()
@@ -254,6 +285,9 @@ public sealed class ClientSession
 
     public void Close()
     {
+        if (Interlocked.Exchange(ref _closed, 1) == 1)
+            return;
+
         try
         {
             _stream?.Close();

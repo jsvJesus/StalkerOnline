@@ -13,6 +13,9 @@ public sealed class GameServer
     private const float PositionBroadcastRadius = 100f;
     private const float SpawnBroadcastRadius = 100f;
 
+    private static readonly TimeSpan ClientPingInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ClientTimeout = TimeSpan.FromSeconds(30);
+
     private readonly IPAddress _ipAddress;
     private readonly int _port;
 
@@ -42,6 +45,10 @@ public sealed class GameServer
         Console.WriteLine($" Port: {_port}");
         Console.WriteLine("===================================");
 
+        _ = Task.Run(
+            () => MonitorSessionsAsync(cancellationToken),
+            cancellationToken);
+
         while (!cancellationToken.IsCancellationRequested)
         {
             TcpClient tcpClient = await _listener.AcceptTcpClientAsync(cancellationToken);
@@ -69,6 +76,48 @@ public sealed class GameServer
             Console.WriteLine($"[SESSION ADDED] SessionId={sessionId}, Online={_sessions.Count}");
 
             _ = Task.Run(session.RunAsync, cancellationToken);
+        }
+    }
+
+    private async Task MonitorSessionsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(ClientPingInterval, cancellationToken);
+
+                DateTime now = DateTime.UtcNow;
+
+                foreach (ClientSession session in _sessions.Values)
+                {
+                    if (session.IsClosed)
+                        continue;
+
+                    TimeSpan idleTime = now - session.LastPacketAtUtc;
+
+                    if (idleTime > ClientTimeout)
+                    {
+                        Console.WriteLine(
+                            $"[CLIENT TIMEOUT] SessionId={session.SessionId}, IdleSeconds={idleTime.TotalSeconds:0.0}");
+
+                        session.Close();
+                        continue;
+                    }
+
+                    await session.SendPingAsync();
+
+                    Console.WriteLine($"[PING] SessionId={session.SessionId}");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // normal shutdown
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SESSION MONITOR ERROR] {ex.Message}");
         }
     }
 
