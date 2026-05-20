@@ -7,11 +7,29 @@ public sealed class GameWorld
 {
     private readonly ConcurrentDictionary<int, WorldPlayer> _playersBySessionId = new();
 
+    private readonly float _moveSpeed;
+    private readonly float _defaultDeltaTime;
+    private readonly float _maxDeltaTime;
+
     public int PlayerCount => _playersBySessionId.Count;
+
+    public GameWorld(
+        float moveSpeed,
+        float defaultDeltaTime,
+        float maxDeltaTime)
+    {
+        _moveSpeed = moveSpeed;
+        _defaultDeltaTime = defaultDeltaTime;
+        _maxDeltaTime = maxDeltaTime;
+    }
 
     public WorldPlayer AddPlayer(PlayerConnection connection)
     {
-        WorldPlayer player = new(connection);
+        WorldPlayer player = new(
+            connection,
+            _moveSpeed,
+            _defaultDeltaTime,
+            _maxDeltaTime);
 
         _playersBySessionId.AddOrUpdate(
             connection.SessionId,

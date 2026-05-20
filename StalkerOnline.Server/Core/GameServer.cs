@@ -1,9 +1,10 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using StalkerOnline.Server.Config;
+using StalkerOnline.Server.Database;
 using StalkerOnline.Server.Game;
 using StalkerOnline.Server.Services;
-using StalkerOnline.Server.Database;
 using StalkerOnline.Shared.Game;
 using StalkerOnline.Shared.Network;
 
@@ -11,12 +12,7 @@ namespace StalkerOnline.Server.Core;
 
 public sealed class GameServer
 {
-    private const float PositionBroadcastRadius = 100f;
-    private const float SpawnBroadcastRadius = 100f;
-
-    private static readonly TimeSpan ClientPingInterval = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan ClientTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan AutoSaveInterval = TimeSpan.FromSeconds(15);
+    private readonly ServerConfig _serverConfig;
 
     private readonly IPAddress _ipAddress;
     private readonly int _port;
@@ -29,17 +25,19 @@ public sealed class GameServer
     private readonly CharacterRepository _characterRepository;
     private readonly CharacterService _characterService;
 
-    private readonly GameWorld _gameWorld = new();
+    private readonly GameWorld _gameWorld;
 
     private readonly ConcurrentDictionary<int, ClientSession> _sessions = new();
 
     private TcpListener? _listener;
     private int _nextSessionId;
 
-    public GameServer(IPAddress ipAddress, int port)
+    public GameServer(ServerConfig serverConfig)
     {
-        _ipAddress = ipAddress;
-        _port = port;
+        _serverConfig = serverConfig;
+
+        _ipAddress = _serverConfig.GetIPAddress();
+        _port = _serverConfig.Port;
 
         _databaseConfig = DatabaseConfig.Load("database.json");
         _databaseConnectionFactory = new DatabaseConnectionFactory(_databaseConfig);
@@ -49,6 +47,11 @@ public sealed class GameServer
 
         _characterRepository = new CharacterRepository(_databaseConnectionFactory);
         _characterService = new CharacterService(_characterRepository);
+
+        _gameWorld = new GameWorld(
+            _serverConfig.MoveSpeed,
+            _serverConfig.DefaultDeltaTime,
+            _serverConfig.MaxDeltaTime);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -67,7 +70,7 @@ public sealed class GameServer
         _ = Task.Run(
             () => MonitorSessionsAsync(cancellationToken),
             cancellationToken);
-        
+
         _ = Task.Run(
             () => AutoSaveOnlinePlayersAsync(cancellationToken),
             cancellationToken);
@@ -108,7 +111,7 @@ public sealed class GameServer
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(ClientPingInterval, cancellationToken);
+                await Task.Delay(_serverConfig.ClientPingInterval, cancellationToken);
 
                 DateTime now = DateTime.UtcNow;
 
@@ -119,7 +122,7 @@ public sealed class GameServer
 
                     TimeSpan idleTime = now - session.LastPacketAtUtc;
 
-                    if (idleTime > ClientTimeout)
+                    if (idleTime > _serverConfig.ClientTimeout)
                     {
                         Console.WriteLine(
                             $"[CLIENT TIMEOUT] SessionId={session.SessionId}, IdleSeconds={idleTime.TotalSeconds:0.0}");
@@ -143,14 +146,14 @@ public sealed class GameServer
             Console.WriteLine($"[SESSION MONITOR ERROR] {ex.Message}");
         }
     }
-    
+
     private async Task AutoSaveOnlinePlayersAsync(CancellationToken cancellationToken)
     {
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(AutoSaveInterval, cancellationToken);
+                await Task.Delay(_serverConfig.AutoSaveInterval, cancellationToken);
 
                 SaveOnlinePlayers("AUTO_SAVE");
             }
@@ -200,7 +203,7 @@ public sealed class GameServer
 
         List<WorldPlayer> nearbyPlayers = _gameWorld.GetNearbyPlayers(
             sourceSession.SessionId,
-            SpawnBroadcastRadius);
+            _serverConfig.SpawnBroadcastRadius);
 
         await SendExistingPlayersToNewPlayerAsync(sourceSession, nearbyPlayers);
         await BroadcastPlayerSpawnAsync(sourceSession, sourcePlayer, nearbyPlayers);
@@ -274,7 +277,7 @@ public sealed class GameServer
     {
         List<int> nearbySessionIds = _gameWorld.GetNearbyPlayerSessionIds(
             sourceSession.SessionId,
-            PositionBroadcastRadius);
+            _serverConfig.PositionBroadcastRadius);
 
         if (nearbySessionIds.Count == 0)
             return;
@@ -313,7 +316,7 @@ public sealed class GameServer
 
         List<int> nearbySessionIds = _gameWorld.GetNearbyPlayerSessionIds(
             sourceSession.SessionId,
-            SpawnBroadcastRadius);
+            _serverConfig.SpawnBroadcastRadius);
 
         if (nearbySessionIds.Count == 0)
             return;

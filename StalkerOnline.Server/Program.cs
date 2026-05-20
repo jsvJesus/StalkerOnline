@@ -1,4 +1,4 @@
-﻿using System.Net;
+﻿using StalkerOnline.Server.Config;
 using StalkerOnline.Server.Core;
 
 Console.Title = "Stalker Online Server";
@@ -12,7 +12,8 @@ Console.CancelKeyPress += (_, eventArgs) =>
     cancellationTokenSource.Cancel();
 };
 
-GameServer server = new(IPAddress.Any, 7777);
+ServerConfig serverConfig = ServerConfig.Load("server.json");
+GameServer server = new(serverConfig);
 
 try
 {

@@ -4,11 +4,11 @@ namespace StalkerOnline.Server.Game;
 
 public sealed class WorldPlayer
 {
-    private const float MoveSpeed = 4.5f;
-    private const float DefaultDeltaTime = 0.05f;
-    private const float MaxDeltaTime = 0.10f;
-
     private readonly object _lock = new();
+
+    private readonly float _moveSpeed;
+    private readonly float _defaultDeltaTime;
+    private readonly float _maxDeltaTime;
 
     public int SessionId { get; }
     public int AccountId { get; }
@@ -21,8 +21,16 @@ public sealed class WorldPlayer
     public DateTime SpawnedAtUtc { get; }
     public DateTime LastMovementAtUtc { get; private set; }
 
-    public WorldPlayer(PlayerConnection connection)
+    public WorldPlayer(
+        PlayerConnection connection,
+        float moveSpeed,
+        float defaultDeltaTime,
+        float maxDeltaTime)
     {
+        _moveSpeed = moveSpeed;
+        _defaultDeltaTime = defaultDeltaTime;
+        _maxDeltaTime = maxDeltaTime;
+
         SessionId = connection.SessionId;
         AccountId = connection.AccountId;
         Login = connection.Login;
@@ -47,7 +55,7 @@ public sealed class WorldPlayer
             NetVector3 direction = SanitizeMoveDirection(input.MoveDirection);
             NetVector3 rotation = SanitizeRotation(input.Rotation);
 
-            float distance = MoveSpeed * deltaTime;
+            float distance = _moveSpeed * deltaTime;
 
             State.Position = new NetVector3(
                 State.Position.X + direction.X * distance,
@@ -139,15 +147,15 @@ public sealed class WorldPlayer
         };
     }
 
-    private static float SanitizeDeltaTime(float deltaTime)
+    private float SanitizeDeltaTime(float deltaTime)
     {
         if (float.IsNaN(deltaTime) || float.IsInfinity(deltaTime))
-            return DefaultDeltaTime;
+            return _defaultDeltaTime;
 
         if (deltaTime <= 0f)
-            return DefaultDeltaTime;
+            return _defaultDeltaTime;
 
-        return Math.Clamp(deltaTime, 0.001f, MaxDeltaTime);
+        return Math.Clamp(deltaTime, 0.001f, _maxDeltaTime);
     }
 
     private static NetVector3 SanitizeMoveDirection(NetVector3 direction)
