@@ -16,6 +16,7 @@ public sealed class GameServer
 
     private static readonly TimeSpan ClientPingInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ClientTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AutoSaveInterval = TimeSpan.FromSeconds(15);
 
     private readonly IPAddress _ipAddress;
     private readonly int _port;
@@ -65,6 +66,10 @@ public sealed class GameServer
 
         _ = Task.Run(
             () => MonitorSessionsAsync(cancellationToken),
+            cancellationToken);
+        
+        _ = Task.Run(
+            () => AutoSaveOnlinePlayersAsync(cancellationToken),
             cancellationToken);
 
         while (!cancellationToken.IsCancellationRequested)
@@ -137,6 +142,53 @@ public sealed class GameServer
         {
             Console.WriteLine($"[SESSION MONITOR ERROR] {ex.Message}");
         }
+    }
+    
+    private async Task AutoSaveOnlinePlayersAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(AutoSaveInterval, cancellationToken);
+
+                SaveOnlinePlayers("AUTO_SAVE");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // normal shutdown
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AUTO SAVE ERROR] {ex.Message}");
+        }
+    }
+
+    private void SaveOnlinePlayers(string reason)
+    {
+        List<PlayerState> snapshots = _gameWorld.CreatePlayerStateSnapshots();
+
+        if (snapshots.Count == 0)
+            return;
+
+        int saved = 0;
+
+        foreach (PlayerState snapshot in snapshots)
+        {
+            try
+            {
+                _characterService.SavePlayerState(snapshot);
+                saved++;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"[SAVE PLAYER ERROR] Reason={reason}, AccountId={snapshot.AccountId}, CharacterId={snapshot.CharacterId}, Message={ex.Message}");
+            }
+        }
+
+        Console.WriteLine($"[WORLD SAVE] Reason={reason}, SavedPlayers={saved}/{snapshots.Count}");
     }
 
     private async Task HandlePlayerJoinedWorldAsync(ClientSession sourceSession)
@@ -309,6 +361,8 @@ public sealed class GameServer
     public void Stop()
     {
         Console.WriteLine("[SERVER STOPPING]");
+
+        SaveOnlinePlayers("SERVER_STOP");
 
         foreach (ClientSession session in _sessions.Values)
         {

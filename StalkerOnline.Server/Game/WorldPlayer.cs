@@ -41,7 +41,7 @@ public sealed class WorldPlayer
         lock (_lock)
         {
             if (!State.IsAlive)
-                return CreatePositionUpdate();
+                return CreatePositionUpdateUnsafe();
 
             float deltaTime = SanitizeDeltaTime(input.DeltaTime);
             NetVector3 direction = SanitizeMoveDirection(input.MoveDirection);
@@ -58,7 +58,7 @@ public sealed class WorldPlayer
 
             LastMovementAtUtc = DateTime.UtcNow;
 
-            return CreatePositionUpdate();
+            return CreatePositionUpdateUnsafe();
         }
     }
 
@@ -70,16 +70,41 @@ public sealed class WorldPlayer
         }
     }
 
+    public PlayerState CreateStateSnapshot()
+    {
+        lock (_lock)
+        {
+            return new PlayerState
+            {
+                AccountId = State.AccountId,
+                CharacterId = State.CharacterId,
+                Nickname = State.Nickname,
+
+                Position = State.Position,
+                Rotation = State.Rotation,
+
+                Health = State.Health,
+                MaxHealth = State.MaxHealth,
+
+                Stamina = State.Stamina,
+                MaxStamina = State.MaxStamina,
+
+                Hunger = State.Hunger,
+                Thirst = State.Thirst,
+
+                Radiation = State.Radiation,
+                Toxicity = State.Toxicity,
+
+                IsAlive = State.IsAlive
+            };
+        }
+    }
+
     public PlayerPositionUpdate CreatePositionUpdate()
     {
         lock (_lock)
         {
-            return new PlayerPositionUpdate
-            {
-                CharacterId = State.CharacterId,
-                Position = State.Position,
-                Rotation = State.Rotation
-            };
+            return CreatePositionUpdateUnsafe();
         }
     }
 
@@ -102,6 +127,16 @@ public sealed class WorldPlayer
                 IsAlive = State.IsAlive
             };
         }
+    }
+
+    private PlayerPositionUpdate CreatePositionUpdateUnsafe()
+    {
+        return new PlayerPositionUpdate
+        {
+            CharacterId = State.CharacterId,
+            Position = State.Position,
+            Rotation = State.Rotation
+        };
     }
 
     private static float SanitizeDeltaTime(float deltaTime)

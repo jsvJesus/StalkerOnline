@@ -45,6 +45,18 @@ public sealed class GameWorld
         return player.ApplyMovement(input);
     }
 
+    public List<PlayerState> CreatePlayerStateSnapshots()
+    {
+        List<PlayerState> snapshots = new();
+
+        foreach (WorldPlayer player in _playersBySessionId.Values)
+        {
+            snapshots.Add(player.CreateStateSnapshot());
+        }
+
+        return snapshots;
+    }
+
     public List<int> GetNearbyPlayerSessionIds(int sourceSessionId, float radius)
     {
         List<int> result = new();
