@@ -75,6 +75,36 @@ public sealed class GameWorld
         return result;
     }
 
+    public List<WorldPlayer> GetNearbyPlayers(int sourceSessionId, float radius)
+    {
+        List<WorldPlayer> result = new();
+
+        if (!_playersBySessionId.TryGetValue(sourceSessionId, out WorldPlayer? sourcePlayer))
+            return result;
+
+        NetVector3 sourcePosition = sourcePlayer.GetPosition();
+
+        float radiusSquared = radius * radius;
+
+        foreach (KeyValuePair<int, WorldPlayer> pair in _playersBySessionId)
+        {
+            int targetSessionId = pair.Key;
+
+            if (targetSessionId == sourceSessionId)
+                continue;
+
+            WorldPlayer targetPlayer = pair.Value;
+            NetVector3 targetPosition = targetPlayer.GetPosition();
+
+            float distanceSquared = GetDistanceSquared(sourcePosition, targetPosition);
+
+            if (distanceSquared <= radiusSquared)
+                result.Add(targetPlayer);
+        }
+
+        return result;
+    }
+
     public WorldPlayer? GetPlayer(int sessionId)
     {
         _playersBySessionId.TryGetValue(sessionId, out WorldPlayer? player);

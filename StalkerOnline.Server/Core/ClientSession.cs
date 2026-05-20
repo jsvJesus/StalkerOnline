@@ -12,7 +12,9 @@ public sealed class ClientSession
     private readonly AccountService _accountService;
     private readonly CharacterService _characterService;
     private readonly GameWorld _gameWorld;
+    private readonly Func<ClientSession, Task> _onPlayerJoinedWorld;
     private readonly Func<ClientSession, PlayerPositionUpdate, Task> _onPlayerPositionChanged;
+    private readonly Func<ClientSession, Task> _onPlayerLeavingWorld;
     private readonly Action<ClientSession> _onDisconnected;
 
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -35,7 +37,9 @@ public sealed class ClientSession
         AccountService accountService,
         CharacterService characterService,
         GameWorld gameWorld,
+        Func<ClientSession, Task> onPlayerJoinedWorld,
         Func<ClientSession, PlayerPositionUpdate, Task> onPlayerPositionChanged,
+        Func<ClientSession, Task> onPlayerLeavingWorld,
         Action<ClientSession> onDisconnected)
     {
         SessionId = sessionId;
@@ -43,7 +47,9 @@ public sealed class ClientSession
         _accountService = accountService;
         _characterService = characterService;
         _gameWorld = gameWorld;
+        _onPlayerJoinedWorld = onPlayerJoinedWorld;
         _onPlayerPositionChanged = onPlayerPositionChanged;
+        _onPlayerLeavingWorld = onPlayerLeavingWorld;
         _onDisconnected = onDisconnected;
 
         RemoteAddress = _client.Client.RemoteEndPoint?.ToString() ?? "unknown";
@@ -86,7 +92,7 @@ public sealed class ClientSession
         }
         finally
         {
-            RemoveFromWorldIfNeeded();
+            await RemoveFromWorldIfNeededAsync();
             Close();
             _onDisconnected(this);
         }
@@ -106,7 +112,7 @@ public sealed class ClientSession
 
             case PacketType.Disconnect:
                 Console.WriteLine($"[CLIENT DISCONNECT REQUEST] SessionId={SessionId}");
-                RemoveFromWorldIfNeeded();
+                await RemoveFromWorldIfNeededAsync();
                 Close();
                 break;
 
@@ -163,6 +169,7 @@ public sealed class ClientSession
         Console.WriteLine($"[PLAYER CREATED] SessionId={SessionId}, CharacterId={playerState.CharacterId}, Nickname={playerState.Nickname}");
 
         await SendPlayerStateSnapshotAsync();
+        await _onPlayerJoinedWorld(this);
     }
 
     private async Task HandleMoveRequestAsync(PacketMessage packet)
@@ -230,7 +237,7 @@ public sealed class ClientSession
         }
     }
 
-    private void RemoveFromWorldIfNeeded()
+    private async Task RemoveFromWorldIfNeededAsync()
     {
         if (_removedFromWorld)
             return;
@@ -239,6 +246,9 @@ public sealed class ClientSession
             return;
 
         _removedFromWorld = true;
+
+        await _onPlayerLeavingWorld(this);
+
         _gameWorld.RemovePlayer(SessionId);
     }
 

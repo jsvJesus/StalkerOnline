@@ -100,9 +100,15 @@ try
     Console.WriteLine($"IsAlive:     {playerState.IsAlive}");
     Console.WriteLine("====================================");
 
+    Dictionary<int, PlayerSpawnInfo> remotePlayers = new();
+
     using CancellationTokenSource networkCts = new();
 
-    Task receiveTask = ReceiveLoopAsync(stream, networkCts.Token);
+    Task receiveTask = ReceiveLoopAsync(
+        stream,
+        playerState.CharacterId,
+        remotePlayers,
+        networkCts.Token);
 
     float rotationZ = playerState.Rotation.Z;
 
@@ -209,7 +215,11 @@ static PlayerMovementInput? BuildMovementInput(ConsoleKeyInfo keyInfo, ref float
     };
 }
 
-static async Task ReceiveLoopAsync(NetworkStream stream, CancellationToken cancellationToken)
+static async Task ReceiveLoopAsync(
+    NetworkStream stream,
+    int localCharacterId,
+    Dictionary<int, PlayerSpawnInfo> remotePlayers,
+    CancellationToken cancellationToken)
 {
     try
     {
@@ -225,6 +235,35 @@ static async Task ReceiveLoopAsync(NetworkStream stream, CancellationToken cance
 
             switch (packet.Type)
             {
+                case PacketType.PlayerSpawn:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    PlayerSpawnInfo spawnInfo = PlayerWorldSerializer.ReadSpawnInfo(reader);
+
+                    if (spawnInfo.CharacterId == localCharacterId)
+                        break;
+
+                    remotePlayers[spawnInfo.CharacterId] = spawnInfo;
+
+                    Console.WriteLine(
+                        $"[PLAYER SPAWN] CharacterId={spawnInfo.CharacterId}, Nickname={spawnInfo.Nickname}, Position={spawnInfo.Position}, RemotePlayers={remotePlayers.Count}");
+
+                    break;
+                }
+
+                case PacketType.PlayerDespawn:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    PlayerDespawnInfo despawnInfo = PlayerWorldSerializer.ReadDespawnInfo(reader);
+
+                    bool removed = remotePlayers.Remove(despawnInfo.CharacterId);
+
+                    Console.WriteLine(
+                        $"[PLAYER DESPAWN] CharacterId={despawnInfo.CharacterId}, Removed={removed}, RemotePlayers={remotePlayers.Count}");
+
+                    break;
+                }
+
                 case PacketType.PlayerPositionUpdate:
                 {
                     PacketReader reader = new(packet.Payload);
@@ -240,6 +279,12 @@ static async Task ReceiveLoopAsync(NetworkStream stream, CancellationToken cance
                 {
                     PacketReader reader = new(packet.Payload);
                     PlayerPositionUpdate update = PlayerMovementSerializer.ReadPositionUpdate(reader);
+
+                    if (remotePlayers.TryGetValue(update.CharacterId, out PlayerSpawnInfo? remotePlayer))
+                    {
+                        remotePlayer.Position = update.Position;
+                        remotePlayer.Rotation = update.Rotation;
+                    }
 
                     Console.WriteLine(
                         $"[POSITION BROADCAST] CharacterId={update.CharacterId}, Position={update.Position}, Rotation={update.Rotation}");

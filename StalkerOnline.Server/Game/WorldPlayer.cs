@@ -83,6 +83,27 @@ public sealed class WorldPlayer
         }
     }
 
+    public PlayerSpawnInfo CreateSpawnInfo()
+    {
+        lock (_lock)
+        {
+            return new PlayerSpawnInfo
+            {
+                CharacterId = State.CharacterId,
+
+                Nickname = State.Nickname,
+
+                Position = State.Position,
+                Rotation = State.Rotation,
+
+                Health = State.Health,
+                MaxHealth = State.MaxHealth,
+
+                IsAlive = State.IsAlive
+            };
+        }
+    }
+
     private static float SanitizeDeltaTime(float deltaTime)
     {
         if (float.IsNaN(deltaTime) || float.IsInfinity(deltaTime))

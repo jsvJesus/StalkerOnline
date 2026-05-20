@@ -11,6 +11,7 @@ namespace StalkerOnline.Server.Core;
 public sealed class GameServer
 {
     private const float PositionBroadcastRadius = 100f;
+    private const float SpawnBroadcastRadius = 100f;
 
     private readonly IPAddress _ipAddress;
     private readonly int _port;
@@ -53,7 +54,9 @@ public sealed class GameServer
                 _accountService,
                 _characterService,
                 _gameWorld,
+                HandlePlayerJoinedWorldAsync,
                 BroadcastPlayerPositionAsync,
+                BroadcastPlayerDespawnAsync,
                 RemoveSession);
 
             if (!_sessions.TryAdd(sessionId, session))
@@ -66,6 +69,83 @@ public sealed class GameServer
             Console.WriteLine($"[SESSION ADDED] SessionId={sessionId}, Online={_sessions.Count}");
 
             _ = Task.Run(session.RunAsync, cancellationToken);
+        }
+    }
+
+    private async Task HandlePlayerJoinedWorldAsync(ClientSession sourceSession)
+    {
+        WorldPlayer? sourcePlayer = _gameWorld.GetPlayer(sourceSession.SessionId);
+
+        if (sourcePlayer == null)
+            return;
+
+        List<WorldPlayer> nearbyPlayers = _gameWorld.GetNearbyPlayers(
+            sourceSession.SessionId,
+            SpawnBroadcastRadius);
+
+        await SendExistingPlayersToNewPlayerAsync(sourceSession, nearbyPlayers);
+        await BroadcastPlayerSpawnAsync(sourceSession, sourcePlayer, nearbyPlayers);
+    }
+
+    private static async Task SendExistingPlayersToNewPlayerAsync(
+        ClientSession newSession,
+        List<WorldPlayer> existingPlayers)
+    {
+        int sent = 0;
+
+        foreach (WorldPlayer existingPlayer in existingPlayers)
+        {
+            PlayerSpawnInfo spawnInfo = existingPlayer.CreateSpawnInfo();
+
+            PacketWriter writer = new();
+            PlayerWorldSerializer.WriteSpawnInfo(writer, spawnInfo);
+
+            await newSession.SendPacketAsync(PacketType.PlayerSpawn, writer.ToArray());
+
+            sent++;
+        }
+
+        if (sent > 0)
+        {
+            Console.WriteLine(
+                $"[SPAWN LIST SENT] SessionId={newSession.SessionId}, Players={sent}");
+        }
+    }
+
+    private async Task BroadcastPlayerSpawnAsync(
+        ClientSession sourceSession,
+        WorldPlayer sourcePlayer,
+        List<WorldPlayer> nearbyPlayers)
+    {
+        if (nearbyPlayers.Count == 0)
+            return;
+
+        PlayerSpawnInfo spawnInfo = sourcePlayer.CreateSpawnInfo();
+
+        PacketWriter writer = new();
+        PlayerWorldSerializer.WriteSpawnInfo(writer, spawnInfo);
+
+        byte[] payload = writer.ToArray();
+
+        List<Task> sendTasks = new();
+
+        foreach (WorldPlayer nearbyPlayer in nearbyPlayers)
+        {
+            if (!_sessions.TryGetValue(nearbyPlayer.SessionId, out ClientSession? targetSession))
+                continue;
+
+            if (!targetSession.IsAuthorized || targetSession.PlayerConnection == null)
+                continue;
+
+            sendTasks.Add(targetSession.SendPacketAsync(PacketType.PlayerSpawn, payload));
+        }
+
+        if (sendTasks.Count > 0)
+        {
+            await Task.WhenAll(sendTasks);
+
+            Console.WriteLine(
+                $"[PLAYER SPAWN BROADCAST] CharacterId={spawnInfo.CharacterId}, Nickname={spawnInfo.Nickname}, Targets={sendTasks.Count}");
         }
     }
 
@@ -104,6 +184,50 @@ public sealed class GameServer
 
             Console.WriteLine(
                 $"[POSITION BROADCAST] CharacterId={positionUpdate.CharacterId}, Targets={sendTasks.Count}, Position={positionUpdate.Position}");
+        }
+    }
+
+    private async Task BroadcastPlayerDespawnAsync(ClientSession sourceSession)
+    {
+        if (sourceSession.PlayerConnection == null)
+            return;
+
+        List<int> nearbySessionIds = _gameWorld.GetNearbyPlayerSessionIds(
+            sourceSession.SessionId,
+            SpawnBroadcastRadius);
+
+        if (nearbySessionIds.Count == 0)
+            return;
+
+        PlayerDespawnInfo despawnInfo = new()
+        {
+            CharacterId = sourceSession.PlayerConnection.State.CharacterId
+        };
+
+        PacketWriter writer = new();
+        PlayerWorldSerializer.WriteDespawnInfo(writer, despawnInfo);
+
+        byte[] payload = writer.ToArray();
+
+        List<Task> sendTasks = new();
+
+        foreach (int targetSessionId in nearbySessionIds)
+        {
+            if (!_sessions.TryGetValue(targetSessionId, out ClientSession? targetSession))
+                continue;
+
+            if (!targetSession.IsAuthorized || targetSession.PlayerConnection == null)
+                continue;
+
+            sendTasks.Add(targetSession.SendPacketAsync(PacketType.PlayerDespawn, payload));
+        }
+
+        if (sendTasks.Count > 0)
+        {
+            await Task.WhenAll(sendTasks);
+
+            Console.WriteLine(
+                $"[PLAYER DESPAWN BROADCAST] CharacterId={despawnInfo.CharacterId}, Targets={sendTasks.Count}");
         }
     }
 

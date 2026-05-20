@@ -13,5 +13,8 @@ public enum PacketType : ushort
     PlayerPositionUpdate = 301,
     PlayerPositionBroadcast = 302,
 
+    PlayerSpawn = 400,
+    PlayerDespawn = 401,
+
     Disconnect = 900
 }
