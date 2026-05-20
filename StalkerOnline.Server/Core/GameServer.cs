@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using StalkerOnline.Server.Game;
 using StalkerOnline.Server.Services;
+using StalkerOnline.Server.Database;
 using StalkerOnline.Shared.Game;
 using StalkerOnline.Shared.Network;
 
@@ -19,7 +20,11 @@ public sealed class GameServer
     private readonly IPAddress _ipAddress;
     private readonly int _port;
 
-    private readonly AccountService _accountService = new();
+    private readonly DatabaseConfig _databaseConfig;
+    private readonly DatabaseConnectionFactory _databaseConnectionFactory;
+    private readonly AccountRepository _accountRepository;
+    private readonly AccountService _accountService;
+
     private readonly CharacterService _characterService = new();
     private readonly GameWorld _gameWorld = new();
 
@@ -32,10 +37,17 @@ public sealed class GameServer
     {
         _ipAddress = ipAddress;
         _port = port;
+
+        _databaseConfig = DatabaseConfig.Load("database.json");
+        _databaseConnectionFactory = new DatabaseConnectionFactory(_databaseConfig);
+        _accountRepository = new AccountRepository(_databaseConnectionFactory);
+        _accountService = new AccountService(_accountRepository);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
+        DatabaseInitializer.Initialize(_databaseConnectionFactory);
+
         _listener = new TcpListener(_ipAddress, _port);
         _listener.Start();
 

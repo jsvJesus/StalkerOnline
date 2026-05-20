@@ -2,22 +2,11 @@ namespace StalkerOnline.Server.Services;
 
 public sealed class AccountService
 {
-    private readonly object _lock = new();
+    private readonly AccountRepository _accountRepository;
 
-    private readonly Dictionary<string, AccountRecord> _accountsByLogin =
-        new(StringComparer.OrdinalIgnoreCase);
-
-    private readonly Dictionary<string, AccountRecord> _accountsByEmail =
-        new(StringComparer.OrdinalIgnoreCase);
-
-    private int _nextAccountId = 1;
-
-    public AccountService()
+    public AccountService(AccountRepository accountRepository)
     {
-        // Тестовый аккаунт, чтобы старый логин не умер полностью.
-        // Login: test
-        // Password: test
-        CreateAccountUnsafe("test", "test@local.test", "123");
+        _accountRepository = accountRepository;
     }
 
     public RegisterResult Register(string login, string email, string password)
@@ -30,20 +19,34 @@ public sealed class AccountService
         if (validationError != null)
             return RegisterResult.Fail(validationError);
 
-        lock (_lock)
+        try
         {
-            if (_accountsByLogin.ContainsKey(login))
+            if (_accountRepository.FindByLogin(login) != null)
                 return RegisterResult.Fail("Login already exists.");
 
-            if (_accountsByEmail.ContainsKey(email))
+            if (_accountRepository.FindByEmail(email) != null)
                 return RegisterResult.Fail("Email already exists.");
 
-            AccountRecord account = CreateAccountUnsafe(login, email, password);
+            string passwordHash = PasswordHasher.HashPassword(password);
+
+            AccountModel account = _accountRepository.Create(
+                login,
+                email,
+                passwordHash);
 
             return RegisterResult.Success(
                 account.AccountId,
                 account.Login,
                 "Account registered successfully.");
+        }
+        catch (DuplicateAccountException)
+        {
+            return RegisterResult.Fail("Login or email already exists.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[REGISTER DATABASE ERROR] {ex.Message}");
+            return RegisterResult.Fail("Database error while creating account.");
         }
     }
 
@@ -57,41 +60,31 @@ public sealed class AccountService
         if (password.Length < 3)
             return LoginResult.Fail("Password must contain at least 3 characters.");
 
-        lock (_lock)
+        try
         {
-            if (!_accountsByLogin.TryGetValue(login, out AccountRecord? account))
+            AccountModel? account = _accountRepository.FindByLogin(login);
+
+            if (account == null)
                 return LoginResult.Fail("Account not found. Please register first.");
 
-            if (account.Password != password)
+            if (account.IsBanned)
+                return LoginResult.Fail("Account is banned.");
+
+            if (!PasswordHasher.VerifyPassword(password, account.PasswordHash))
                 return LoginResult.Fail("Invalid password.");
 
-            account.LastLoginAtUtc = DateTime.UtcNow;
+            _accountRepository.UpdateLastLoginAt(account.AccountId);
 
             return LoginResult.Success(
                 account.AccountId,
                 account.Login,
                 "Login accepted. Welcome to Stalker Online.");
         }
-    }
-
-    private AccountRecord CreateAccountUnsafe(string login, string email, string password)
-    {
-        AccountRecord account = new()
+        catch (Exception ex)
         {
-            AccountId = _nextAccountId++,
-            Login = login,
-            Email = email,
-            Password = password,
-            CreatedAtUtc = DateTime.UtcNow,
-            LastLoginAtUtc = null,
-            IsBanned = false,
-            IsAdmin = false
-        };
-
-        _accountsByLogin.Add(account.Login, account);
-        _accountsByEmail.Add(account.Email, account);
-
-        return account;
+            Console.WriteLine($"[LOGIN DATABASE ERROR] {ex.Message}");
+            return LoginResult.Fail("Database error while login.");
+        }
     }
 
     private static string? ValidateRegisterFields(string login, string email, string password)
@@ -153,18 +146,6 @@ public sealed class AccountService
         string domain = email[(atIndex + 1)..];
 
         return domain.Contains('.');
-    }
-
-    private sealed class AccountRecord
-    {
-        public int AccountId { get; init; }
-        public string Login { get; init; } = string.Empty;
-        public string Email { get; init; } = string.Empty;
-        public string Password { get; init; } = string.Empty;
-        public DateTime CreatedAtUtc { get; init; }
-        public DateTime? LastLoginAtUtc { get; set; }
-        public bool IsBanned { get; init; }
-        public bool IsAdmin { get; init; }
     }
 }
 
