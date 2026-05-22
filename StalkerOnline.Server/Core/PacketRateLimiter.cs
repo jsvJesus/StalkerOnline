@@ -42,6 +42,14 @@ public sealed class PacketRateLimiter
                 disconnectOnLimit: false)
         },
         {
+            PacketType.PickupItemRequest,
+            new PacketRateRule(
+                PacketType.PickupItemRequest,
+                maxPackets: 10,
+                window: TimeSpan.FromSeconds(1),
+                disconnectOnLimit: false)
+        },
+        {
             PacketType.Ping,
             new PacketRateRule(
                 PacketType.Ping,

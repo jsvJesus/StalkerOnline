@@ -1,4 +1,5 @@
-﻿using System.Net.Sockets;
+﻿using System.Collections.Concurrent;
+using System.Net.Sockets;
 using StalkerOnline.Shared.Game;
 using StalkerOnline.Shared.Network;
 
@@ -115,7 +116,7 @@ try
     Console.WriteLine("====================================");
 
     Dictionary<int, PlayerSpawnInfo> remotePlayers = new();
-    Dictionary<int, WorldItemSpawnInfo> worldItems = new();
+    ConcurrentDictionary<int, WorldItemSpawnInfo> worldItems = new();
 
     using CancellationTokenSource networkCts = new();
     
@@ -133,6 +134,7 @@ try
     Console.WriteLine("Movement controls:");
     Console.WriteLine("W/A/S/D - move");
     Console.WriteLine("Q/E     - rotate");
+    Console.WriteLine("P       - pickup first visible item");
     Console.WriteLine("ESC     - disconnect");
     Console.WriteLine();
 
@@ -152,6 +154,25 @@ try
 
             Console.WriteLine("[CLIENT] Disconnect sent.");
             break;
+        }
+        
+        if (keyInfo.Key == ConsoleKey.P)
+        {
+            int? worldObjectId = GetFirstVisibleWorldItemId(worldItems);
+
+            if (worldObjectId == null)
+            {
+                Console.WriteLine("[PICKUP] No visible world items.");
+                continue;
+            }
+
+            await SendPickupItemRequestAsync(
+                stream,
+                sendLock,
+                worldObjectId.Value,
+                networkCts.Token);
+
+            continue;
         }
 
         PlayerMovementInput? input = BuildMovementInput(keyInfo, ref rotationZ);
@@ -424,12 +445,50 @@ static PlayerMovementInput? BuildMovementInput(ConsoleKeyInfo keyInfo, ref float
     };
 }
 
+static int? GetFirstVisibleWorldItemId(
+    ConcurrentDictionary<int, WorldItemSpawnInfo> worldItems)
+{
+    int? selectedWorldObjectId = null;
+
+    foreach (int worldObjectId in worldItems.Keys)
+    {
+        if (selectedWorldObjectId == null || worldObjectId < selectedWorldObjectId.Value)
+            selectedWorldObjectId = worldObjectId;
+    }
+
+    return selectedWorldObjectId;
+}
+
+static async Task SendPickupItemRequestAsync(
+    NetworkStream stream,
+    SemaphoreSlim sendLock,
+    int worldObjectId,
+    CancellationToken cancellationToken)
+{
+    PickupItemRequest request = new()
+    {
+        WorldObjectId = worldObjectId
+    };
+
+    PacketWriter writer = new();
+    PickupItemSerializer.WriteRequest(writer, request);
+
+    await SendPacketAsync(
+        stream,
+        sendLock,
+        PacketType.PickupItemRequest,
+        writer.ToArray(),
+        cancellationToken);
+
+    Console.WriteLine($"[PICKUP REQUEST SENT] WorldObjectId={worldObjectId}");
+}
+
 static async Task ReceiveLoopAsync(
     NetworkStream stream,
     SemaphoreSlim sendLock,
     int localCharacterId,
     Dictionary<int, PlayerSpawnInfo> remotePlayers,
-    Dictionary<int, WorldItemSpawnInfo> worldItems,
+    ConcurrentDictionary<int, WorldItemSpawnInfo> worldItems,
     CancellationToken cancellationToken)
 {
     try
@@ -572,10 +631,24 @@ static async Task ReceiveLoopAsync(
                     PacketReader reader = new(packet.Payload);
                     WorldItemDespawnInfo despawnInfo = WorldItemSerializer.ReadDespawnInfo(reader);
 
-                    bool removed = worldItems.Remove(despawnInfo.WorldObjectId);
+                    bool removed = worldItems.TryRemove(despawnInfo.WorldObjectId, out _);
 
                     Console.WriteLine(
                         $"[WORLD ITEM DESPAWN] WorldObjectId={despawnInfo.WorldObjectId}, Removed={removed}, Items={worldItems.Count}");
+
+                    break;
+                }
+                
+                case PacketType.PickupItemResponse:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    PickupItemResponse response = PickupItemSerializer.ReadResponse(reader);
+
+                    Console.WriteLine(
+                        $"[PICKUP RESPONSE] Success={response.IsSuccess}, WorldObjectId={response.WorldObjectId}, TemplateId={response.ItemTemplateId}, Name={response.DisplayName}, Quantity={response.Quantity}, Message={response.Message}");
+
+                    if (response.IsSuccess)
+                        worldItems.TryRemove(response.WorldObjectId, out _);
 
                     break;
                 }

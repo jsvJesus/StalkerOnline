@@ -28,5 +28,8 @@ public enum PacketType : ushort
     WorldItemSpawn = 500,
     WorldItemDespawn = 501,
 
+    PickupItemRequest = 502,
+    PickupItemResponse = 503,
+
     Disconnect = 900
 }

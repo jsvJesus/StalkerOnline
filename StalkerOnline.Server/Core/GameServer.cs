@@ -90,8 +90,10 @@ public sealed class GameServer
                 _accountService,
                 _characterService,
                 _gameWorld,
+                _serverConfig.ItemPickupDistance,
                 HandlePlayerJoinedWorldAsync,
                 BroadcastPlayerPositionAsync,
+                BroadcastWorldItemPickedUpAsync,
                 BroadcastPlayerDespawnAsync,
                 RemoveSession);
 
@@ -535,6 +537,40 @@ public sealed class GameServer
 
         if (sendTasks.Count > 0)
             await Task.WhenAll(sendTasks);
+    }
+    
+    private async Task BroadcastWorldItemPickedUpAsync(
+        ClientSession pickerSession,
+        WorldItemPickupResult pickupResult)
+    {
+        List<int> observerSessionIds = _interestManager.RemoveVisibleWorldItemFromAll(
+            pickupResult.WorldObjectId);
+
+        if (observerSessionIds.Count == 0)
+            return;
+
+        List<Task> sendTasks = new();
+
+        foreach (int observerSessionId in observerSessionIds)
+        {
+            if (!_sessions.TryGetValue(observerSessionId, out ClientSession? observerSession))
+                continue;
+
+            if (!observerSession.IsAuthorized || observerSession.PlayerConnection == null)
+                continue;
+
+            sendTasks.Add(SendWorldItemDespawnPacketsAsync(
+                observerSession,
+                new List<int> { pickupResult.WorldObjectId }));
+        }
+
+        if (sendTasks.Count > 0)
+        {
+            await Task.WhenAll(sendTasks);
+
+            Console.WriteLine(
+                $"[WORLD ITEM PICKUP BROADCAST] PickerSessionId={pickerSession.SessionId}, WorldObjectId={pickupResult.WorldObjectId}, Observers={sendTasks.Count}");
+        }
     }
 
     private async Task BroadcastPlayerDespawnAsync(ClientSession sourceSession)

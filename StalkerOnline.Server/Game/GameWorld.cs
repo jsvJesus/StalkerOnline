@@ -311,6 +311,96 @@ public sealed class GameWorld
 
         return result;
     }
+    
+    public WorldItemPickupResult TryPickupWorldItem(
+    int pickerSessionId,
+    int worldObjectId,
+    float maxPickupDistance)
+    {
+        if (!_playersBySessionId.TryGetValue(pickerSessionId, out WorldPlayer? player))
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                "Player was not found in world.");
+        }
+
+        if (!player.State.IsAlive)
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                "Dead player cannot pickup items.");
+        }
+
+        if (!_objectsByWorldObjectId.TryGetValue(worldObjectId, out WorldObject? worldObject))
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                "World item was not found.");
+        }
+
+        if (worldObject is not WorldItem item)
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                "World object is not an item.");
+        }
+
+        if (!item.IsActive)
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                "World item is not active.");
+        }
+
+        NetVector3 playerPosition = player.GetPosition();
+        NetVector3 itemPosition = item.GetPosition();
+
+        float maxDistanceSquared = maxPickupDistance * maxPickupDistance;
+        float distanceSquared = GetDistanceSquared(playerPosition, itemPosition);
+
+        if (distanceSquared > maxDistanceSquared)
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                $"Too far from item. MaxDistance={maxPickupDistance:0.00}");
+        }
+
+        if (!item.TryTakeAll(out int takenQuantity))
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                "Failed to pickup item.");
+        }
+
+        _objectsByWorldObjectId.TryRemove(worldObjectId, out _);
+
+        Console.WriteLine(
+            $"[WORLD ITEM PICKED UP] SessionId={player.SessionId}, CharacterId={player.CharacterId}, WorldObjectId={item.WorldObjectId}, TemplateId={item.ItemTemplateId}, Name={item.DisplayName}, Quantity={takenQuantity}");
+
+        return new WorldItemPickupResult
+        {
+            IsSuccess = true,
+
+            PickerSessionId = player.SessionId,
+            PickerCharacterId = player.CharacterId,
+
+            WorldObjectId = item.WorldObjectId,
+
+            ItemTemplateId = item.ItemTemplateId,
+            DisplayName = item.DisplayName,
+
+            Quantity = takenQuantity,
+
+            Message = "Item picked up."
+        };
+    }
 
     public void Clear()
     {

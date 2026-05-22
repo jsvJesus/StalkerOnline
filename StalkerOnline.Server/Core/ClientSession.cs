@@ -14,6 +14,8 @@ public sealed class ClientSession
     private readonly AccountService _accountService;
     private readonly CharacterService _characterService;
     private readonly GameWorld _gameWorld;
+    private readonly float _itemPickupDistance;
+    private readonly Func<ClientSession, WorldItemPickupResult, Task> _onWorldItemPickedUp;
     private readonly Func<ClientSession, Task> _onPlayerJoinedWorld;
     private readonly Func<ClientSession, PlayerPositionUpdate, Task> _onPlayerPositionChanged;
     private readonly Func<ClientSession, Task> _onPlayerLeavingWorld;
@@ -48,8 +50,10 @@ public sealed class ClientSession
         AccountService accountService,
         CharacterService characterService,
         GameWorld gameWorld,
+        float itemPickupDistance,
         Func<ClientSession, Task> onPlayerJoinedWorld,
         Func<ClientSession, PlayerPositionUpdate, Task> onPlayerPositionChanged,
+        Func<ClientSession, WorldItemPickupResult, Task> onWorldItemPickedUp,
         Func<ClientSession, Task> onPlayerLeavingWorld,
         Action<ClientSession> onDisconnected)
     {
@@ -58,8 +62,10 @@ public sealed class ClientSession
         _accountService = accountService;
         _characterService = characterService;
         _gameWorld = gameWorld;
+        _itemPickupDistance = itemPickupDistance;
         _onPlayerJoinedWorld = onPlayerJoinedWorld;
         _onPlayerPositionChanged = onPlayerPositionChanged;
+        _onWorldItemPickedUp = onWorldItemPickedUp;
         _onPlayerLeavingWorld = onPlayerLeavingWorld;
         _onDisconnected = onDisconnected;
 
@@ -159,6 +165,10 @@ public sealed class ClientSession
 
             case PacketType.MoveRequest:
                 await HandleMoveRequestAsync(packet);
+                break;
+            
+            case PacketType.PickupItemRequest:
+                await HandlePickupItemRequestAsync(packet);
                 break;
 
             case PacketType.Disconnect:
@@ -333,6 +343,65 @@ public sealed class ClientSession
         Console.WriteLine(
             $"[MOVE] SessionId={SessionId}, CharacterId={positionUpdate.CharacterId}, Position={positionUpdate.Position}, Rotation={positionUpdate.Rotation}");
     }
+    
+    private async Task HandlePickupItemRequestAsync(PacketMessage packet)
+    {
+        if (!IsAuthorized || PlayerConnection == null)
+        {
+            Console.WriteLine($"[PICKUP IGNORED] SessionId={SessionId}, Reason=Not authorized");
+
+            PickupItemResponse notAuthorizedResponse = new()
+            {
+                IsSuccess = false,
+                WorldObjectId = 0,
+                Message = "You must login before pickup items."
+            };
+
+            await SendPickupItemResponseAsync(notAuthorizedResponse);
+
+            return;
+        }
+
+        PacketReader reader = new(packet.Payload);
+        PickupItemRequest request = PickupItemSerializer.ReadRequest(reader);
+
+        Console.WriteLine(
+            $"[PICKUP REQUEST] SessionId={SessionId}, CharacterId={PlayerConnection.State.CharacterId}, WorldObjectId={request.WorldObjectId}");
+
+        WorldItemPickupResult result = _gameWorld.TryPickupWorldItem(
+            SessionId,
+            request.WorldObjectId,
+            _itemPickupDistance);
+
+        PickupItemResponse response = new()
+        {
+            IsSuccess = result.IsSuccess,
+
+            WorldObjectId = result.WorldObjectId,
+
+            ItemTemplateId = result.ItemTemplateId,
+            DisplayName = result.DisplayName,
+
+            Quantity = result.Quantity,
+
+            Message = result.Message
+        };
+
+        await SendPickupItemResponseAsync(response);
+
+        if (!result.IsSuccess)
+        {
+            Console.WriteLine(
+                $"[PICKUP FAILED] SessionId={SessionId}, WorldObjectId={request.WorldObjectId}, Reason={result.Message}");
+
+            return;
+        }
+
+        await SendServerMessageAsync(
+            $"Picked up: {result.DisplayName} x{result.Quantity}");
+
+        await _onWorldItemPickedUp(this, result);
+    }
 
     private async Task SendPlayerStateSnapshotAsync()
     {
@@ -346,6 +415,14 @@ public sealed class ClientSession
         await SendPacketAsync(PacketType.PlayerStateSnapshot, writer.ToArray());
 
         Console.WriteLine($"[PLAYER STATE SENT] SessionId={SessionId}, CharacterId={PlayerConnection.State.CharacterId}");
+    }
+    
+    private async Task SendPickupItemResponseAsync(PickupItemResponse response)
+    {
+        PacketWriter writer = new();
+        PickupItemSerializer.WriteResponse(writer, response);
+
+        await SendPacketAsync(PacketType.PickupItemResponse, writer.ToArray());
     }
 
     public async Task SendPingAsync()

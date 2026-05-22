@@ -16,6 +16,8 @@ public sealed class ServerConfig
     public float PositionBroadcastRadius { get; set; } = 100f;
     
     public float ItemVisibilityRadius { get; set; } = 100f;
+    
+    public float ItemPickupDistance { get; set; } = 2.5f;
     public float SpawnBroadcastRadius { get; set; } = 100f;
 
     public float MoveSpeed { get; set; } = 4.5f;
@@ -68,6 +70,7 @@ public sealed class ServerConfig
         Console.WriteLine($"[SERVER CONFIG] Ping={config.ClientPingIntervalSeconds}s, Timeout={config.ClientTimeoutSeconds}s, AutoSave={config.AutoSaveIntervalSeconds}s");
         Console.WriteLine($"[SERVER CONFIG] PositionRadius={config.PositionBroadcastRadius}, SpawnRadius={config.SpawnBroadcastRadius}");
         Console.WriteLine($"[SERVER CONFIG] ItemVisibilityRadius={config.ItemVisibilityRadius}");
+        Console.WriteLine($"[SERVER CONFIG] ItemPickupDistance={config.ItemPickupDistance}");
         Console.WriteLine($"[SERVER CONFIG] MoveSpeed={config.MoveSpeed}, DeltaTime={config.DefaultDeltaTime}-{config.MaxDeltaTime}");
 
         return config;
@@ -125,6 +128,9 @@ public sealed class ServerConfig
         
         if (ItemVisibilityRadius <= 0f)
             throw new InvalidOperationException("ItemVisibilityRadius must be greater than 0.");
+        
+        if (ItemPickupDistance <= 0f)
+            throw new InvalidOperationException("ItemPickupDistance must be greater than 0.");
 
         if (MoveSpeed <= 0f)
             throw new InvalidOperationException("MoveSpeed must be greater than 0.");
