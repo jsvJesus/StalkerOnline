@@ -3,6 +3,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -10,8 +11,11 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-NetworkClient::NetworkClient(LogCallback logCallback)
-    : _logCallback(std::move(logCallback))
+NetworkClient::NetworkClient(
+    LogCallback logCallback,
+    StateChangedCallback stateChangedCallback)
+    : _logCallback(std::move(logCallback)),
+      _stateChangedCallback(std::move(stateChangedCallback))
 {
     WSADATA wsaData{};
 
@@ -201,6 +205,58 @@ RegisterResult NetworkClient::Register(
     return result;
 }
 
+bool NetworkClient::SendMoveRequest(
+    float directionX,
+    float directionY,
+    float rotationZ,
+    float deltaTime)
+{
+    PacketWriter writer;
+
+    writer.WriteFloat(directionX);
+    writer.WriteFloat(directionY);
+    writer.WriteFloat(0.0f);
+
+    writer.WriteFloat(0.0f);
+    writer.WriteFloat(0.0f);
+    writer.WriteFloat(rotationZ);
+
+    writer.WriteFloat(deltaTime);
+
+    bool sent = SendPacket(PacketType::MoveRequest, writer.Data());
+
+    if (sent)
+    {
+        std::wstringstream ss;
+        ss
+            << L"[MOVE REQUEST] Direction=("
+            << directionX << L", "
+            << directionY << L"), RotationZ="
+            << rotationZ;
+
+        Log(ss.str());
+    }
+
+    return sent;
+}
+
+bool NetworkClient::SendPickupItemRequest(int32_t worldObjectId)
+{
+    PacketWriter writer;
+    writer.WriteInt32(worldObjectId);
+
+    bool sent = SendPacket(PacketType::PickupItemRequest, writer.Data());
+
+    if (sent)
+    {
+        std::wstringstream ss;
+        ss << L"[PICKUP REQUEST] WorldObjectId=" << worldObjectId;
+        Log(ss.str());
+    }
+
+    return sent;
+}
+
 void NetworkClient::StartReceiveLoop()
 {
     if (!_connected)
@@ -234,6 +290,39 @@ void NetworkClient::Stop()
 bool NetworkClient::IsConnected() const
 {
     return _connected;
+}
+
+PlayerSnapshot NetworkClient::GetPlayerSnapshot() const
+{
+    std::lock_guard lock(_stateMutex);
+    return _playerSnapshot;
+}
+
+InventorySnapshotView NetworkClient::GetInventorySnapshot() const
+{
+    std::lock_guard lock(_stateMutex);
+    return _inventorySnapshot;
+}
+
+std::vector<WorldItemView> NetworkClient::GetWorldItemsSnapshot() const
+{
+    std::lock_guard lock(_stateMutex);
+
+    std::vector<WorldItemView> result;
+    result.reserve(_worldItemsById.size());
+
+    for (const auto& pair : _worldItemsById)
+        result.push_back(pair.second);
+
+    std::sort(
+        result.begin(),
+        result.end(),
+        [](const WorldItemView& a, const WorldItemView& b)
+        {
+            return a.WorldObjectId < b.WorldObjectId;
+        });
+
+    return result;
 }
 
 bool NetworkClient::SendPacket(PacketType type, const std::vector<uint8_t>& payload)
@@ -370,6 +459,7 @@ void NetworkClient::ReceiveLoop()
     _receiveLoopRunning = false;
 
     Log(L"[NET] Receive loop stopped.");
+    NotifyStateChanged();
 }
 
 void NetworkClient::HandlePacket(const PacketMessage& message)
@@ -419,131 +509,37 @@ void NetworkClient::HandlePacket(const PacketMessage& message)
 
         case PacketType::PlayerStateSnapshot:
         {
-            PacketReader reader(message.Payload);
+            HandlePlayerStateSnapshot(message);
+            break;
+        }
 
-            int32_t accountId = reader.ReadInt32();
-            int32_t characterId = reader.ReadInt32();
-            std::string nickname = reader.ReadString();
-
-            float posX = reader.ReadFloat();
-            float posY = reader.ReadFloat();
-            float posZ = reader.ReadFloat();
-
-            float rotX = reader.ReadFloat();
-            float rotY = reader.ReadFloat();
-            float rotZ = reader.ReadFloat();
-
-            float health = reader.ReadFloat();
-            float maxHealth = reader.ReadFloat();
-
-            float stamina = reader.ReadFloat();
-            float maxStamina = reader.ReadFloat();
-
-            float hunger = reader.ReadFloat();
-            float thirst = reader.ReadFloat();
-
-            float radiation = reader.ReadFloat();
-            float toxicity = reader.ReadFloat();
-
-            bool isAlive = reader.ReadBool();
-
-            std::wstringstream ss;
-            ss
-                << L"[PLAYER] AccountId=" << accountId
-                << L", CharacterId=" << characterId
-                << L", Nickname=" << Utf8ToWide(nickname)
-                << L", Pos=(" << posX << L", " << posY << L", " << posZ << L")"
-                << L", Rot=(" << rotX << L", " << rotY << L", " << rotZ << L")"
-                << L", HP=" << health << L"/" << maxHealth
-                << L", ST=" << stamina << L"/" << maxStamina
-                << L", Hunger=" << hunger
-                << L", Thirst=" << thirst
-                << L", Rad=" << radiation
-                << L", Toxic=" << toxicity
-                << L", Alive=" << (isAlive ? L"true" : L"false");
-
-            Log(ss.str());
+        case PacketType::PlayerPositionUpdate:
+        {
+            HandlePlayerPositionUpdate(message);
             break;
         }
 
         case PacketType::InventorySnapshot:
         {
-            PacketReader reader(message.Payload);
-
-            int32_t characterId = reader.ReadInt32();
-            int32_t capacity = reader.ReadInt32();
-            float totalWeight = reader.ReadFloat();
-            int32_t itemCount = reader.ReadInt32();
-
-            std::wstringstream ss;
-            ss
-                << L"[INVENTORY] CharacterId=" << characterId
-                << L", Items=" << itemCount << L"/" << capacity
-                << L", Weight=" << totalWeight;
-
-            Log(ss.str());
-
-            for (int32_t i = 0; i < itemCount; ++i)
-            {
-                int32_t slotIndex = reader.ReadInt32();
-                std::string itemTemplateId = reader.ReadString();
-                std::string displayName = reader.ReadString();
-                int32_t quantity = reader.ReadInt32();
-                int32_t maxStack = reader.ReadInt32();
-                float weightPerItem = reader.ReadFloat();
-
-                std::wstringstream itemStream;
-                itemStream
-                    << L"  Slot " << slotIndex
-                    << L": " << Utf8ToWide(displayName)
-                    << L" [" << Utf8ToWide(itemTemplateId) << L"]"
-                    << L" x" << quantity << L"/" << maxStack
-                    << L", WeightPerItem=" << weightPerItem;
-
-                Log(itemStream.str());
-            }
-
+            HandleInventorySnapshot(message);
             break;
         }
 
         case PacketType::WorldItemSpawn:
         {
-            PacketReader reader(message.Payload);
-
-            int32_t worldObjectId = reader.ReadInt32();
-            std::string itemTemplateId = reader.ReadString();
-            std::string displayName = reader.ReadString();
-            int32_t quantity = reader.ReadInt32();
-
-            float posX = reader.ReadFloat();
-            float posY = reader.ReadFloat();
-            float posZ = reader.ReadFloat();
-
-            float rotX = reader.ReadFloat();
-            float rotY = reader.ReadFloat();
-            float rotZ = reader.ReadFloat();
-
-            std::wstringstream ss;
-            ss
-                << L"[WORLD ITEM SPAWN] WorldObjectId=" << worldObjectId
-                << L", " << Utf8ToWide(displayName)
-                << L" [" << Utf8ToWide(itemTemplateId) << L"]"
-                << L" x" << quantity
-                << L", Pos=(" << posX << L", " << posY << L", " << posZ << L")"
-                << L", Rot=(" << rotX << L", " << rotY << L", " << rotZ << L")";
-
-            Log(ss.str());
+            HandleWorldItemSpawn(message);
             break;
         }
 
         case PacketType::WorldItemDespawn:
         {
-            PacketReader reader(message.Payload);
-            int32_t worldObjectId = reader.ReadInt32();
+            HandleWorldItemDespawn(message);
+            break;
+        }
 
-            std::wstringstream ss;
-            ss << L"[WORLD ITEM DESPAWN] WorldObjectId=" << worldObjectId;
-            Log(ss.str());
+        case PacketType::PickupItemResponse:
+        {
+            HandlePickupItemResponse(message);
             break;
         }
 
@@ -553,6 +549,214 @@ void NetworkClient::HandlePacket(const PacketMessage& message)
             break;
         }
     }
+}
+
+void NetworkClient::HandlePlayerStateSnapshot(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+
+    PlayerSnapshot snapshot;
+    snapshot.Valid = true;
+
+    snapshot.AccountId = reader.ReadInt32();
+    snapshot.CharacterId = reader.ReadInt32();
+    snapshot.Nickname = reader.ReadString();
+
+    snapshot.PositionX = reader.ReadFloat();
+    snapshot.PositionY = reader.ReadFloat();
+    snapshot.PositionZ = reader.ReadFloat();
+
+    snapshot.RotationX = reader.ReadFloat();
+    snapshot.RotationY = reader.ReadFloat();
+    snapshot.RotationZ = reader.ReadFloat();
+
+    snapshot.Health = reader.ReadFloat();
+    snapshot.MaxHealth = reader.ReadFloat();
+
+    snapshot.Stamina = reader.ReadFloat();
+    snapshot.MaxStamina = reader.ReadFloat();
+
+    snapshot.Hunger = reader.ReadFloat();
+    snapshot.Thirst = reader.ReadFloat();
+
+    snapshot.Radiation = reader.ReadFloat();
+    snapshot.Toxicity = reader.ReadFloat();
+
+    snapshot.IsAlive = reader.ReadBool();
+
+    {
+        std::lock_guard lock(_stateMutex);
+        _playerSnapshot = snapshot;
+    }
+
+    std::wstringstream ss;
+    ss
+        << L"[PLAYER STATE] CharacterId=" << snapshot.CharacterId
+        << L", Nickname=" << Utf8ToWide(snapshot.Nickname);
+
+    Log(ss.str());
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandlePlayerPositionUpdate(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+
+    int32_t characterId = reader.ReadInt32();
+
+    float posX = reader.ReadFloat();
+    float posY = reader.ReadFloat();
+    float posZ = reader.ReadFloat();
+
+    float rotX = reader.ReadFloat();
+    float rotY = reader.ReadFloat();
+    float rotZ = reader.ReadFloat();
+
+    {
+        std::lock_guard lock(_stateMutex);
+
+        if (_playerSnapshot.Valid && _playerSnapshot.CharacterId == characterId)
+        {
+            _playerSnapshot.PositionX = posX;
+            _playerSnapshot.PositionY = posY;
+            _playerSnapshot.PositionZ = posZ;
+
+            _playerSnapshot.RotationX = rotX;
+            _playerSnapshot.RotationY = rotY;
+            _playerSnapshot.RotationZ = rotZ;
+        }
+    }
+
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandleInventorySnapshot(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+
+    InventorySnapshotView snapshot;
+    snapshot.Valid = true;
+
+    snapshot.CharacterId = reader.ReadInt32();
+    snapshot.Capacity = reader.ReadInt32();
+    snapshot.TotalWeight = reader.ReadFloat();
+
+    int32_t itemCount = reader.ReadInt32();
+
+    if (itemCount < 0)
+        itemCount = 0;
+
+    snapshot.Items.reserve(static_cast<size_t>(itemCount));
+
+    for (int32_t i = 0; i < itemCount; ++i)
+    {
+        InventoryItemView item;
+
+        item.SlotIndex = reader.ReadInt32();
+        item.ItemTemplateId = reader.ReadString();
+        item.DisplayName = reader.ReadString();
+        item.Quantity = reader.ReadInt32();
+        item.MaxStack = reader.ReadInt32();
+        item.WeightPerItem = reader.ReadFloat();
+
+        snapshot.Items.push_back(item);
+    }
+
+    {
+        std::lock_guard lock(_stateMutex);
+        _inventorySnapshot = std::move(snapshot);
+    }
+
+    Log(L"[INVENTORY SNAPSHOT]");
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandleWorldItemSpawn(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+
+    WorldItemView item;
+
+    item.WorldObjectId = reader.ReadInt32();
+    item.ItemTemplateId = reader.ReadString();
+    item.DisplayName = reader.ReadString();
+    item.Quantity = reader.ReadInt32();
+
+    item.PositionX = reader.ReadFloat();
+    item.PositionY = reader.ReadFloat();
+    item.PositionZ = reader.ReadFloat();
+
+    item.RotationX = reader.ReadFloat();
+    item.RotationY = reader.ReadFloat();
+    item.RotationZ = reader.ReadFloat();
+
+    {
+        std::lock_guard lock(_stateMutex);
+        _worldItemsById[item.WorldObjectId] = item;
+    }
+
+    std::wstringstream ss;
+    ss
+        << L"[WORLD ITEM SPAWN] Id=" << item.WorldObjectId
+        << L", Name=" << Utf8ToWide(item.DisplayName)
+        << L", Qty=" << item.Quantity;
+
+    Log(ss.str());
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandleWorldItemDespawn(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+    int32_t worldObjectId = reader.ReadInt32();
+
+    {
+        std::lock_guard lock(_stateMutex);
+        _worldItemsById.erase(worldObjectId);
+    }
+
+    std::wstringstream ss;
+    ss << L"[WORLD ITEM DESPAWN] Id=" << worldObjectId;
+
+    Log(ss.str());
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandlePickupItemResponse(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+
+    bool success = reader.ReadBool();
+    int32_t worldObjectId = reader.ReadInt32();
+
+    std::string itemTemplateId = reader.ReadString();
+    std::string displayName = reader.ReadString();
+
+    int32_t quantity = reader.ReadInt32();
+    std::string responseMessage = reader.ReadString();
+
+    if (success)
+    {
+        std::lock_guard lock(_stateMutex);
+        _worldItemsById.erase(worldObjectId);
+    }
+
+    std::wstringstream ss;
+    ss
+        << L"[PICKUP RESPONSE] Success=" << (success ? L"true" : L"false")
+        << L", Id=" << worldObjectId
+        << L", Name=" << Utf8ToWide(displayName)
+        << L", Qty=" << quantity
+        << L", Message=" << Utf8ToWide(responseMessage);
+
+    Log(ss.str());
+    NotifyStateChanged();
+}
+
+void NetworkClient::NotifyStateChanged()
+{
+    if (_stateChangedCallback)
+        _stateChangedCallback();
 }
 
 void NetworkClient::Log(const std::wstring& message)
