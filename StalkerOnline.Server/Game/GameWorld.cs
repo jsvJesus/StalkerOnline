@@ -238,6 +238,79 @@ public sealed class GameWorld
 
         return result;
     }
+    
+    public WorldItem SpawnWorldItem(
+        string itemTemplateId,
+        string displayName,
+        int quantity,
+        NetVector3 position,
+        NetVector3 rotation)
+    {
+        int worldObjectId = CreateWorldObjectId();
+
+        WorldItem item = new(
+            worldObjectId,
+            itemTemplateId,
+            displayName,
+            quantity,
+            position,
+            rotation);
+
+        _objectsByWorldObjectId.AddOrUpdate(
+            item.WorldObjectId,
+            item,
+            (existingWorldObjectId, oldObject) => item);
+
+        Console.WriteLine(
+            $"[WORLD ITEM SPAWNED] WorldObjectId={item.WorldObjectId}, TemplateId={item.ItemTemplateId}, Name={item.DisplayName}, Quantity={item.Quantity}, Position={item.GetPosition()}, Objects={WorldObjectCount}");
+
+        return item;
+    }
+
+    public bool RemoveWorldItem(int worldObjectId)
+    {
+        bool removed = _objectsByWorldObjectId.TryRemove(worldObjectId, out WorldObject? worldObject);
+
+        if (removed && worldObject is WorldItem item)
+        {
+            item.SetActive(false);
+
+            Console.WriteLine(
+                $"[WORLD ITEM REMOVED] WorldObjectId={item.WorldObjectId}, TemplateId={item.ItemTemplateId}, Name={item.DisplayName}, Objects={WorldObjectCount}");
+
+            return true;
+        }
+
+        return false;
+    }
+
+    public WorldItem? GetWorldItem(int worldObjectId)
+    {
+        if (!_objectsByWorldObjectId.TryGetValue(worldObjectId, out WorldObject? worldObject))
+            return null;
+
+        return worldObject as WorldItem;
+    }
+
+    public List<WorldItem> GetNearbyWorldItemsForPlayer(
+        int sourceSessionId,
+        float radius)
+    {
+        List<WorldItem> result = new();
+
+        List<WorldObject> nearbyObjects = GetNearbyWorldObjectsForPlayer(
+            sourceSessionId,
+            radius,
+            WorldObjectType.Item);
+
+        foreach (WorldObject worldObject in nearbyObjects)
+        {
+            if (worldObject is WorldItem item)
+                result.Add(item);
+        }
+
+        return result;
+    }
 
     public void Clear()
     {

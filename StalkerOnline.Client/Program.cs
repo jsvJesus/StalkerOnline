@@ -115,14 +115,16 @@ try
     Console.WriteLine("====================================");
 
     Dictionary<int, PlayerSpawnInfo> remotePlayers = new();
+    Dictionary<int, WorldItemSpawnInfo> worldItems = new();
 
     using CancellationTokenSource networkCts = new();
-
+    
     Task receiveTask = ReceiveLoopAsync(
         stream,
         sendLock,
         playerState.CharacterId,
         remotePlayers,
+        worldItems,
         networkCts.Token);
 
     float rotationZ = playerState.Rotation.Z;
@@ -427,6 +429,7 @@ static async Task ReceiveLoopAsync(
     SemaphoreSlim sendLock,
     int localCharacterId,
     Dictionary<int, PlayerSpawnInfo> remotePlayers,
+    Dictionary<int, WorldItemSpawnInfo> worldItems,
     CancellationToken cancellationToken)
 {
     try
@@ -547,6 +550,32 @@ static async Task ReceiveLoopAsync(
 
                     Console.WriteLine(
                         $"[STATE SNAPSHOT] CharacterId={state.CharacterId}, Position={state.Position}, Rotation={state.Rotation}");
+
+                    break;
+                }
+                
+                case PacketType.WorldItemSpawn:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    WorldItemSpawnInfo spawnInfo = WorldItemSerializer.ReadSpawnInfo(reader);
+
+                    worldItems[spawnInfo.WorldObjectId] = spawnInfo;
+
+                    Console.WriteLine(
+                        $"[WORLD ITEM SPAWN] WorldObjectId={spawnInfo.WorldObjectId}, TemplateId={spawnInfo.ItemTemplateId}, Name={spawnInfo.DisplayName}, Quantity={spawnInfo.Quantity}, Position={spawnInfo.Position}, Items={worldItems.Count}");
+
+                    break;
+                }
+
+                case PacketType.WorldItemDespawn:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    WorldItemDespawnInfo despawnInfo = WorldItemSerializer.ReadDespawnInfo(reader);
+
+                    bool removed = worldItems.Remove(despawnInfo.WorldObjectId);
+
+                    Console.WriteLine(
+                        $"[WORLD ITEM DESPAWN] WorldObjectId={despawnInfo.WorldObjectId}, Removed={removed}, Items={worldItems.Count}");
 
                     break;
                 }

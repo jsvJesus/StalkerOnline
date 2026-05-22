@@ -7,6 +7,7 @@ public sealed class InterestManager
     private readonly object _lock = new();
 
     private readonly Dictionary<int, HashSet<int>> _visiblePlayersByObserverSessionId = new();
+    private readonly Dictionary<int, HashSet<int>> _visibleWorldItemsByObserverSessionId = new();
 
     public void RegisterPlayer(int sessionId)
     {
@@ -14,6 +15,9 @@ public sealed class InterestManager
         {
             if (!_visiblePlayersByObserverSessionId.ContainsKey(sessionId))
                 _visiblePlayersByObserverSessionId[sessionId] = new HashSet<int>();
+
+            if (!_visibleWorldItemsByObserverSessionId.ContainsKey(sessionId))
+                _visibleWorldItemsByObserverSessionId[sessionId] = new HashSet<int>();
         }
     }
 
@@ -22,6 +26,7 @@ public sealed class InterestManager
         lock (_lock)
         {
             _visiblePlayersByObserverSessionId.Remove(sessionId);
+            _visibleWorldItemsByObserverSessionId.Remove(sessionId);
 
             foreach (HashSet<int> visiblePlayers in _visiblePlayersByObserverSessionId.Values)
             {
@@ -70,6 +75,48 @@ public sealed class InterestManager
             }
 
             return new InterestVisibilityChanges(playersToSpawn, playersToDespawn);
+        }
+    }
+
+    public InterestWorldItemVisibilityChanges RefreshVisibleWorldItems(
+        int observerSessionId,
+        IEnumerable<int> currentVisibleWorldItemIds)
+    {
+        lock (_lock)
+        {
+            if (!_visibleWorldItemsByObserverSessionId.TryGetValue(
+                    observerSessionId,
+                    out HashSet<int>? oldVisibleWorldItems))
+            {
+                oldVisibleWorldItems = new HashSet<int>();
+                _visibleWorldItemsByObserverSessionId[observerSessionId] = oldVisibleWorldItems;
+            }
+
+            HashSet<int> newVisibleWorldItems = new(currentVisibleWorldItemIds);
+
+            List<int> itemsToSpawn = new();
+            List<int> itemsToDespawn = new();
+
+            foreach (int worldObjectId in newVisibleWorldItems)
+            {
+                if (!oldVisibleWorldItems.Contains(worldObjectId))
+                    itemsToSpawn.Add(worldObjectId);
+            }
+
+            foreach (int worldObjectId in oldVisibleWorldItems)
+            {
+                if (!newVisibleWorldItems.Contains(worldObjectId))
+                    itemsToDespawn.Add(worldObjectId);
+            }
+
+            oldVisibleWorldItems.Clear();
+
+            foreach (int worldObjectId in newVisibleWorldItems)
+            {
+                oldVisibleWorldItems.Add(worldObjectId);
+            }
+
+            return new InterestWorldItemVisibilityChanges(itemsToSpawn, itemsToDespawn);
         }
     }
 
@@ -141,6 +188,25 @@ public sealed class InterestManager
         }
     }
 
+    public List<int> RemoveVisibleWorldItemFromAll(int worldObjectId)
+    {
+        lock (_lock)
+        {
+            List<int> observers = new();
+
+            foreach (KeyValuePair<int, HashSet<int>> pair in _visibleWorldItemsByObserverSessionId)
+            {
+                int observerSessionId = pair.Key;
+                HashSet<int> visibleWorldItems = pair.Value;
+
+                if (visibleWorldItems.Remove(worldObjectId))
+                    observers.Add(observerSessionId);
+            }
+
+            return observers;
+        }
+    }
+
     public bool CanSee(int observerSessionId, int targetSessionId)
     {
         lock (_lock)
@@ -161,6 +227,7 @@ public sealed class InterestManager
         lock (_lock)
         {
             _visiblePlayersByObserverSessionId.Clear();
+            _visibleWorldItemsByObserverSessionId.Clear();
         }
     }
 }
@@ -178,5 +245,21 @@ public sealed class InterestVisibilityChanges
     {
         PlayersToSpawn = playersToSpawn;
         PlayersToDespawn = playersToDespawn;
+    }
+}
+
+public sealed class InterestWorldItemVisibilityChanges
+{
+    public List<int> ItemsToSpawn { get; }
+    public List<int> ItemsToDespawn { get; }
+
+    public bool HasChanges => ItemsToSpawn.Count > 0 || ItemsToDespawn.Count > 0;
+
+    public InterestWorldItemVisibilityChanges(
+        List<int> itemsToSpawn,
+        List<int> itemsToDespawn)
+    {
+        ItemsToSpawn = itemsToSpawn;
+        ItemsToDespawn = itemsToDespawn;
     }
 }

@@ -25,5 +25,8 @@ public enum PacketType : ushort
     PlayerSpawn = 400,
     PlayerDespawn = 401,
 
+    WorldItemSpawn = 500,
+    WorldItemDespawn = 501,
+
     Disconnect = 900
 }

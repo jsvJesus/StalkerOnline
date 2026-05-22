@@ -58,6 +58,8 @@ public sealed class GameServer
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         DatabaseInitializer.Initialize(_databaseConnectionFactory);
+        
+        SpawnTestWorldItems();
 
         _listener = new TcpListener(_ipAddress, _port);
         _listener.Start();
@@ -205,6 +207,7 @@ public sealed class GameServer
         _interestManager.RegisterPlayer(sourceSession.SessionId);
 
         await UpdatePlayerInterestAsync(sourceSession);
+        await UpdateWorldItemInterestAsync(sourceSession);
 
         Console.WriteLine(
             $"[INTEREST JOIN] SessionId={sourceSession.SessionId}, CharacterId={sourcePlayer.CharacterId}");
@@ -215,6 +218,7 @@ public sealed class GameServer
         PlayerPositionUpdate positionUpdate)
     {
         await UpdatePlayerInterestAsync(sourceSession);
+        await UpdateWorldItemInterestAsync(sourceSession);
 
         List<int> observerSessionIds = _interestManager.GetObserversSeeingPlayer(sourceSession.SessionId);
 
@@ -417,6 +421,120 @@ public sealed class GameServer
 
         Console.WriteLine(
             $"[PLAYER DESPAWN SEND] ObserverSessionId={observerSession.SessionId}, TargetCharacterId={targetCharacterId}");
+    }
+    
+    private void SpawnTestWorldItems()
+    {
+        _gameWorld.SpawnWorldItem(
+            "item_water_bottle",
+            "Bottle of Water",
+            1,
+            new NetVector3(2f, 2f, 0f),
+            NetVector3.Zero);
+
+        _gameWorld.SpawnWorldItem(
+            "item_medkit_small",
+            "Small Medkit",
+            1,
+            new NetVector3(5f, 1f, 0f),
+            NetVector3.Zero);
+
+        _gameWorld.SpawnWorldItem(
+            "item_ak_ammo_545",
+            "5.45x39 Ammo",
+            30,
+            new NetVector3(-3f, 4f, 0f),
+            NetVector3.Zero);
+
+        Console.WriteLine("[TEST LOOT SPAWNED]");
+    }
+    
+    private async Task UpdateWorldItemInterestAsync(ClientSession observerSession)
+    {
+        if (observerSession.PlayerConnection == null)
+            return;
+
+        List<WorldItem> nearbyItems = _gameWorld.GetNearbyWorldItemsForPlayer(
+            observerSession.SessionId,
+            _serverConfig.ItemVisibilityRadius);
+
+        List<int> nearbyWorldItemIds = new();
+
+        foreach (WorldItem item in nearbyItems)
+        {
+            nearbyWorldItemIds.Add(item.WorldObjectId);
+        }
+
+        InterestWorldItemVisibilityChanges changes = _interestManager.RefreshVisibleWorldItems(
+            observerSession.SessionId,
+            nearbyWorldItemIds);
+
+        if (changes.ItemsToSpawn.Count > 0)
+            await SendWorldItemSpawnPacketsAsync(observerSession, changes.ItemsToSpawn);
+
+        if (changes.ItemsToDespawn.Count > 0)
+            await SendWorldItemDespawnPacketsAsync(observerSession, changes.ItemsToDespawn);
+    }
+    
+    private async Task SendWorldItemSpawnPacketsAsync(
+        ClientSession observerSession,
+        List<int> worldObjectIds)
+    {
+        List<Task> sendTasks = new();
+
+        foreach (int worldObjectId in worldObjectIds)
+        {
+            WorldItem? item = _gameWorld.GetWorldItem(worldObjectId);
+
+            if (item == null)
+                continue;
+
+            if (!item.IsActive)
+                continue;
+
+            WorldItemSpawnInfo spawnInfo = item.CreateSpawnInfo();
+
+            PacketWriter writer = new();
+            WorldItemSerializer.WriteSpawnInfo(writer, spawnInfo);
+
+            sendTasks.Add(observerSession.SendPacketAsync(
+                PacketType.WorldItemSpawn,
+                writer.ToArray()));
+
+            Console.WriteLine(
+                $"[WORLD ITEM SPAWN SEND] ObserverSessionId={observerSession.SessionId}, WorldObjectId={spawnInfo.WorldObjectId}, Name={spawnInfo.DisplayName}, Quantity={spawnInfo.Quantity}");
+        }
+
+        if (sendTasks.Count > 0)
+            await Task.WhenAll(sendTasks);
+    }
+    
+    private async Task SendWorldItemDespawnPacketsAsync(
+        ClientSession observerSession,
+        List<int> worldObjectIds)
+    {
+        List<Task> sendTasks = new();
+
+        foreach (int worldObjectId in worldObjectIds)
+        {
+            WorldItemDespawnInfo despawnInfo = new()
+            {
+                WorldObjectId = worldObjectId
+            };
+
+            PacketWriter writer = new();
+            WorldItemSerializer.WriteDespawnInfo(writer, despawnInfo);
+
+            sendTasks.Add(observerSession.SendPacketAsync(
+                PacketType.WorldItemDespawn,
+                writer.ToArray()));
+
+            Console.WriteLine(
+                $"[WORLD ITEM DESPAWN SEND] ObserverSessionId={observerSession.SessionId}, WorldObjectId={worldObjectId}");
+        }
+
+        if (sendTasks.Count > 0)
+            await Task.WhenAll(sendTasks);
     }
 
     private async Task BroadcastPlayerDespawnAsync(ClientSession sourceSession)
