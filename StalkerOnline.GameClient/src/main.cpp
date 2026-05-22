@@ -87,6 +87,17 @@ namespace
         g_statusText = text;
     }
 
+    uint16_t GetServerPortFromLoginState()
+    {
+        if (g_loginState.ServerPort < 1)
+            return 7777;
+
+        if (g_loginState.ServerPort > 65535)
+            return 7777;
+
+        return static_cast<uint16_t>(g_loginState.ServerPort);
+    }
+
     void SyncUiStatus()
     {
         std::lock_guard<std::mutex> lock(g_statusMutex);
@@ -299,8 +310,17 @@ namespace
         if (g_busy.load())
             return;
 
+        const std::string host = g_loginState.ServerHost;
+        const uint16_t port = GetServerPortFromLoginState();
+
         const std::string login = g_loginState.Login;
         const std::string password = g_loginState.Password;
+
+        if (host.empty())
+        {
+            SetStatus("Server IP is empty");
+            return;
+        }
 
         if (login.empty())
         {
@@ -317,7 +337,7 @@ namespace
         g_busy.store(true);
         SetStatus("Connecting...");
 
-        std::thread([login, password]()
+        std::thread([host, port, login, password]()
         {
             if (!g_client)
             {
@@ -328,7 +348,7 @@ namespace
 
             if (!g_client->IsConnected())
             {
-                if (!g_client->Connect(DefaultServerHost, DefaultServerPort))
+                if (!g_client->Connect(host, port))
                 {
                     g_connected.store(false);
                     g_busy.store(false);
@@ -366,9 +386,18 @@ namespace
         if (g_busy.load())
             return;
 
+        const std::string host = g_loginState.ServerHost;
+        const uint16_t port = GetServerPortFromLoginState();
+
         const std::string login = g_loginState.Login;
         const std::string email = g_loginState.Email;
         const std::string password = g_loginState.Password;
+
+        if (host.empty())
+        {
+            SetStatus("Server IP is empty");
+            return;
+        }
 
         if (login.empty())
         {
@@ -391,7 +420,7 @@ namespace
         g_busy.store(true);
         SetStatus("Connecting...");
 
-        std::thread([login, email, password]()
+        std::thread([host, port, login, email, password]()
         {
             if (!g_client)
             {
@@ -402,7 +431,7 @@ namespace
 
             if (!g_client->IsConnected())
             {
-                if (!g_client->Connect(DefaultServerHost, DefaultServerPort))
+                if (!g_client->Connect(host, port))
                 {
                     g_connected.store(false);
                     g_busy.store(false);
@@ -680,7 +709,12 @@ int WINAPI wWinMain(
         }
     );
 
-    SetStatus("Ready. Server: " + std::string(DefaultServerHost) + ":" + std::to_string(DefaultServerPort));
+    SetStatus(
+        "Ready. Server: " +
+        std::string(g_loginState.ServerHost) +
+        ":" +
+        std::to_string(g_loginState.ServerPort)
+    );
 
     MSG message{};
 

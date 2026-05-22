@@ -385,7 +385,7 @@ namespace StalkerOnline::UI
 
         ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-        const ImVec2 panelSize(480.0f, state.RegisterMode ? 500.0f : 440.0f);
+        const ImVec2 panelSize(520.0f, state.RegisterMode ? 585.0f : 525.0f);
         const ImVec2 panelPos(
             viewport->Pos.x + viewport->Size.x * 0.5f - panelSize.x * 0.5f,
             viewport->Pos.y + viewport->Size.y * 0.5f - panelSize.y * 0.5f
@@ -429,6 +429,20 @@ namespace StalkerOnline::UI
         );
 
         ImGui::Dummy(ImVec2(1.0f, 18.0f));
+
+        ImGui::TextColored(ColorFromBytes(197, 179, 126), "SERVER IP");
+        ImGui::InputText("##ServerHostInput", state.ServerHost, sizeof(state.ServerHost));
+
+        ImGui::TextColored(ColorFromBytes(197, 179, 126), "SERVER PORT");
+        ImGui::InputInt("##ServerPortInput", &state.ServerPort, 1, 100);
+
+        if (state.ServerPort < 1)
+            state.ServerPort = 1;
+
+        if (state.ServerPort > 65535)
+            state.ServerPort = 65535;
+
+        ImGui::Dummy(ImVec2(1.0f, 8.0f));
 
         ImGui::TextColored(ColorFromBytes(197, 179, 126), "LOGIN");
         ImGui::InputText("##LoginInput", state.Login, sizeof(state.Login));

@@ -13,6 +13,9 @@ namespace StalkerOnline::UI
         bool RegisterMode = false;
         bool RememberLogin = true;
 
+        char ServerHost[128] = "26.163.92.76";
+        int ServerPort = 7777;
+
         char Login[64] = {};
         char Email[128] = {};
         char Password[64] = {};
