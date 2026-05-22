@@ -244,7 +244,9 @@ public sealed class GameWorld
         string displayName,
         int quantity,
         NetVector3 position,
-        NetVector3 rotation)
+        NetVector3 rotation,
+        int maxStack = 1,
+        float weightPerItem = 0f)
     {
         int worldObjectId = CreateWorldObjectId();
 
@@ -253,6 +255,8 @@ public sealed class GameWorld
             itemTemplateId,
             displayName,
             quantity,
+            maxStack,
+            weightPerItem,
             position,
             rotation);
 
@@ -262,7 +266,7 @@ public sealed class GameWorld
             (existingWorldObjectId, oldObject) => item);
 
         Console.WriteLine(
-            $"[WORLD ITEM SPAWNED] WorldObjectId={item.WorldObjectId}, TemplateId={item.ItemTemplateId}, Name={item.DisplayName}, Quantity={item.Quantity}, Position={item.GetPosition()}, Objects={WorldObjectCount}");
+            $"[WORLD ITEM SPAWNED] WorldObjectId={item.WorldObjectId}, TemplateId={item.ItemTemplateId}, Name={item.DisplayName}, Quantity={item.Quantity}, MaxStack={item.MaxStack}, Weight={item.WeightPerItem:0.00}, Position={item.GetPosition()}, Objects={WorldObjectCount}");
 
         return item;
     }
@@ -357,6 +361,9 @@ public sealed class GameWorld
                 "World item is not active.");
         }
 
+        if (float.IsNaN(maxPickupDistance) || float.IsInfinity(maxPickupDistance) || maxPickupDistance <= 0f)
+            maxPickupDistance = 2.0f;
+
         NetVector3 playerPosition = player.GetPosition();
         NetVector3 itemPosition = item.GetPosition();
 
@@ -371,12 +378,54 @@ public sealed class GameWorld
                 $"Too far from item. MaxDistance={maxPickupDistance:0.00}");
         }
 
+        int itemQuantity = item.GetQuantitySnapshot();
+
+        if (itemQuantity <= 0)
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                "World item is empty.");
+        }
+
+        bool canAddToInventory = player.Inventory.CanFullyAddItem(
+            item.ItemTemplateId,
+            item.DisplayName,
+            itemQuantity,
+            item.MaxStack,
+            item.WeightPerItem);
+
+        if (!canAddToInventory)
+        {
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                "Inventory is full.");
+        }
+
         if (!item.TryTakeAll(out int takenQuantity))
         {
             return WorldItemPickupResult.Fail(
                 pickerSessionId,
                 worldObjectId,
                 "Failed to pickup item.");
+        }
+
+        InventoryAddResult addResult = player.Inventory.AddItem(
+            item.ItemTemplateId,
+            item.DisplayName,
+            takenQuantity,
+            item.MaxStack,
+            item.WeightPerItem);
+
+        if (!addResult.IsSuccess || addResult.AddedQuantity != takenQuantity)
+        {
+            item.RestoreQuantity(takenQuantity);
+
+            return WorldItemPickupResult.Fail(
+                pickerSessionId,
+                worldObjectId,
+                $"Failed to add item to inventory. {addResult.Message}");
         }
 
         _objectsByWorldObjectId.TryRemove(worldObjectId, out _);

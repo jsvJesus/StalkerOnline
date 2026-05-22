@@ -401,6 +401,8 @@ public sealed class ClientSession
         await SendServerMessageAsync(
             $"Picked up: {result.DisplayName} x{result.Quantity}");
 
+        await SendInventorySnapshotAsync();
+
         await _onWorldItemPickedUp(this, result);
     }
 

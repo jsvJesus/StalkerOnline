@@ -149,6 +149,59 @@ public sealed class PlayerInventory
                     : "Item was not added. Inventory is full."
         };
     }
+    
+    public bool CanFullyAddItem(
+        string itemTemplateId,
+        string displayName,
+        int quantity,
+        int maxStack,
+        float weightPerItem)
+    {
+        itemTemplateId = (itemTemplateId ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(itemTemplateId))
+            return false;
+
+        if (quantity <= 0)
+            return false;
+
+        maxStack = Math.Max(1, maxStack);
+
+        int remaining = quantity;
+
+        lock (_lock)
+        {
+            foreach (InventoryItem item in _items.OrderBy(x => x.SlotIndex))
+            {
+                if (remaining <= 0)
+                    break;
+
+                if (!item.CanStackWith(itemTemplateId, maxStack))
+                    continue;
+
+                int freeInStack = item.MaxStack - item.Quantity;
+
+                if (freeInStack <= 0)
+                    continue;
+
+                int addToStack = Math.Min(freeInStack, remaining);
+                remaining -= addToStack;
+            }
+
+            if (remaining <= 0)
+                return true;
+
+            int usedSlots = _items.Count;
+            int freeSlots = Capacity - usedSlots;
+
+            if (freeSlots <= 0)
+                return false;
+
+            int requiredNewSlots = (remaining + maxStack - 1) / maxStack;
+
+            return requiredNewSlots <= freeSlots;
+        }
+    }
 
     public InventorySnapshot CreateSnapshot(int characterId)
     {

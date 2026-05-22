@@ -10,6 +10,8 @@ public sealed class WorldItem : WorldObject
     public string DisplayName { get; }
 
     public int Quantity { get; private set; }
+    public int MaxStack { get; }
+    public float WeightPerItem { get; }
 
     public DateTime SpawnedAtUtc { get; }
 
@@ -18,6 +20,8 @@ public sealed class WorldItem : WorldObject
         string itemTemplateId,
         string displayName,
         int quantity,
+        int maxStack,
+        float weightPerItem,
         NetVector3 position,
         NetVector3 rotation)
         : base(
@@ -26,10 +30,19 @@ public sealed class WorldItem : WorldObject
             position,
             rotation)
     {
-        ItemTemplateId = itemTemplateId.Trim();
-        DisplayName = displayName.Trim();
+        ItemTemplateId = (itemTemplateId ?? string.Empty).Trim();
+        DisplayName = (displayName ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(DisplayName))
+            DisplayName = ItemTemplateId;
 
         Quantity = Math.Max(1, quantity);
+        MaxStack = Math.Max(1, maxStack);
+
+        if (float.IsNaN(weightPerItem) || float.IsInfinity(weightPerItem) || weightPerItem < 0f)
+            WeightPerItem = 0f;
+        else
+            WeightPerItem = weightPerItem;
 
         SpawnedAtUtc = DateTime.UtcNow;
     }
@@ -53,6 +66,14 @@ public sealed class WorldItem : WorldObject
         }
     }
 
+    public int GetQuantitySnapshot()
+    {
+        lock (_lock)
+        {
+            return Quantity;
+        }
+    }
+
     public bool TryTakeAll(out int takenQuantity)
     {
         lock (_lock)
@@ -71,6 +92,18 @@ public sealed class WorldItem : WorldObject
             SetActive(false);
 
             return true;
+        }
+    }
+
+    public void RestoreQuantity(int quantity)
+    {
+        if (quantity <= 0)
+            return;
+
+        lock (_lock)
+        {
+            Quantity += quantity;
+            SetActive(true);
         }
     }
 }

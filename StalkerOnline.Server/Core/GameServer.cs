@@ -432,21 +432,27 @@ public sealed class GameServer
             "Bottle of Water",
             1,
             new NetVector3(2f, 2f, 0f),
-            NetVector3.Zero);
+            NetVector3.Zero,
+            maxStack: 5,
+            weightPerItem: 0.50f);
 
         _gameWorld.SpawnWorldItem(
             "item_medkit_small",
             "Small Medkit",
             1,
             new NetVector3(5f, 1f, 0f),
-            NetVector3.Zero);
+            NetVector3.Zero,
+            maxStack: 5,
+            weightPerItem: 0.35f);
 
         _gameWorld.SpawnWorldItem(
             "item_ak_ammo_545",
             "5.45x39 Ammo",
             30,
             new NetVector3(-3f, 4f, 0f),
-            NetVector3.Zero);
+            NetVector3.Zero,
+            maxStack: 60,
+            weightPerItem: 0.01f);
 
         Console.WriteLine("[TEST LOOT SPAWNED]");
     }
