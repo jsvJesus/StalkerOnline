@@ -157,7 +157,7 @@ namespace StalkerOnline::UI
     void DrawZoneBackground(float timeSeconds)
     {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
-        ImDrawList* drawList = ImGui::GetBackgroundDrawList(viewport);
+        ImDrawList* drawList = ImGui::GetBackgroundDrawList();
 
         const ImVec2 pos = viewport->Pos;
         const ImVec2 size = viewport->Size;
