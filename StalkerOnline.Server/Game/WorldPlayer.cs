@@ -2,7 +2,7 @@ using StalkerOnline.Shared.Game;
 
 namespace StalkerOnline.Server.Game;
 
-public sealed class WorldPlayer
+public sealed class WorldPlayer : WorldObject
 {
     private readonly object _lock = new();
 
@@ -22,10 +22,16 @@ public sealed class WorldPlayer
     public DateTime LastMovementAtUtc { get; private set; }
 
     public WorldPlayer(
+        int worldObjectId,
         PlayerConnection connection,
         float moveSpeed,
         float defaultDeltaTime,
         float maxDeltaTime)
+        : base(
+            worldObjectId,
+            WorldObjectType.Player,
+            connection.State.Position,
+            connection.State.Rotation)
     {
         _moveSpeed = moveSpeed;
         _defaultDeltaTime = defaultDeltaTime;
@@ -64,17 +70,11 @@ public sealed class WorldPlayer
 
             State.Rotation = rotation;
 
+            SetTransform(State.Position, State.Rotation);
+
             LastMovementAtUtc = DateTime.UtcNow;
 
             return CreatePositionUpdateUnsafe();
-        }
-    }
-
-    public NetVector3 GetPosition()
-    {
-        lock (_lock)
-        {
-            return State.Position;
         }
     }
 
