@@ -653,4 +653,402 @@ namespace StalkerOnline::UI
 
         EndStalkerPanel();
     }
+
+    static const InventoryItemUi* FindInventoryItemAtSlot(
+        const InventorySnapshotUi& inventory,
+        int32_t slotIndex
+    )
+    {
+        for (const InventoryItemUi& item : inventory.Items)
+        {
+            if (item.SlotIndex == slotIndex)
+                return &item;
+        }
+
+        return nullptr;
+    }
+
+    static bool HasWorldItem(
+        const std::vector<WorldItemUi>& items,
+        int32_t worldObjectId
+    )
+    {
+        if (worldObjectId <= 0)
+            return false;
+
+        for (const WorldItemUi& item : items)
+        {
+            if (item.WorldObjectId == worldObjectId)
+                return true;
+        }
+
+        return false;
+    }
+
+    static void DrawRealInventorySlot(
+        const InventoryItemUi* item,
+        int32_t slotIndex
+    )
+    {
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+
+        constexpr float slotSize = 54.0f;
+
+        const bool hasItem = item != nullptr;
+
+        drawList->AddRectFilled(
+            pos,
+            ImVec2(pos.x + slotSize, pos.y + slotSize),
+            hasItem ? U32(45, 47, 36, 245) : U32(17, 18, 15, 235),
+            2.0f
+        );
+
+        drawList->AddRect(
+            pos,
+            ImVec2(pos.x + slotSize, pos.y + slotSize),
+            hasItem ? U32(163, 132, 66, 235) : U32(67, 61, 46, 190),
+            2.0f,
+            0,
+            1.0f
+        );
+
+        char slotText[32];
+        std::snprintf(slotText, sizeof(slotText), "%d", slotIndex);
+
+        drawList->AddText(
+            ImVec2(pos.x + 4.0f, pos.y + 3.0f),
+            U32(102, 98, 82, 220),
+            slotText
+        );
+
+        if (hasItem)
+        {
+            drawList->AddRectFilled(
+                ImVec2(pos.x + 13.0f, pos.y + 15.0f),
+                ImVec2(pos.x + slotSize - 13.0f, pos.y + slotSize - 13.0f),
+                U32(103, 94, 62, 230),
+                3.0f
+            );
+
+            drawList->AddRect(
+                ImVec2(pos.x + 13.0f, pos.y + 15.0f),
+                ImVec2(pos.x + slotSize - 13.0f, pos.y + slotSize - 13.0f),
+                U32(219, 177, 78, 210),
+                3.0f,
+                0,
+                1.0f
+            );
+
+            char qtyText[32];
+            std::snprintf(qtyText, sizeof(qtyText), "x%d", item->Quantity);
+
+            const ImVec2 qtySize = ImGui::CalcTextSize(qtyText);
+
+            drawList->AddText(
+                ImVec2(pos.x + slotSize - qtySize.x - 4.0f, pos.y + slotSize - 17.0f),
+                U32(235, 225, 190, 255),
+                qtyText
+            );
+        }
+
+        ImGui::InvisibleButton("##InventorySlot", ImVec2(slotSize, slotSize));
+
+        if (hasItem && ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::TextColored(ColorFromBytes(226, 194, 105), "%s", item->DisplayName.c_str());
+            ImGui::Separator();
+            ImGui::Text("Template: %s", item->ItemTemplateId.c_str());
+            ImGui::Text("Slot: %d", item->SlotIndex);
+            ImGui::Text("Quantity: %d / %d", item->Quantity, item->MaxStack);
+            ImGui::Text("Weight: %.2f", item->WeightPerItem);
+            ImGui::EndTooltip();
+        }
+    }
+
+    static void DrawInventoryGrid(const InventorySnapshotUi& inventory)
+    {
+        const int32_t capacity = inventory.Capacity > 0 ? inventory.Capacity : 20;
+        constexpr int32_t columns = 5;
+
+        ImGui::BeginChild(
+            "##InventoryGridChild",
+            ImVec2(0.0f, 260.0f),
+            true,
+            ImGuiWindowFlags_AlwaysVerticalScrollbar
+        );
+
+        for (int32_t slot = 0; slot < capacity; ++slot)
+        {
+            ImGui::PushID(slot);
+
+            const InventoryItemUi* item = FindInventoryItemAtSlot(inventory, slot);
+            DrawRealInventorySlot(item, slot);
+
+            ImGui::PopID();
+
+            if ((slot + 1) % columns != 0)
+                ImGui::SameLine();
+        }
+
+        ImGui::EndChild();
+    }
+
+    static void DrawWorldItemsList(
+        GameScreenState& state,
+        GameScreenActions& actions
+    )
+    {
+        if (!HasWorldItem(state.WorldItems, state.SelectedWorldItemId))
+            state.SelectedWorldItemId = 0;
+
+        ImGui::BeginChild(
+            "##WorldItemsChild",
+            ImVec2(0.0f, 230.0f),
+            true,
+            ImGuiWindowFlags_AlwaysVerticalScrollbar
+        );
+
+        if (state.WorldItems.empty())
+        {
+            ImGui::TextColored(ColorFromBytes(130, 126, 108), "No visible world items.");
+        }
+        else
+        {
+            for (const WorldItemUi& item : state.WorldItems)
+            {
+                char label[256];
+
+                std::snprintf(
+                    label,
+                    sizeof(label),
+                    "%s x%d  |  id=%d  |  %.1f %.1f %.1f",
+                    item.DisplayName.c_str(),
+                    item.Quantity,
+                    item.WorldObjectId,
+                    item.PositionX,
+                    item.PositionY,
+                    item.PositionZ
+                );
+
+                const bool selected = state.SelectedWorldItemId == item.WorldObjectId;
+
+                ImGui::PushID(item.WorldObjectId);
+
+                if (ImGui::Selectable(label, selected))
+                    state.SelectedWorldItemId = item.WorldObjectId;
+
+                if (ImGui::IsItemHovered())
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::TextColored(ColorFromBytes(226, 194, 105), "%s", item.DisplayName.c_str());
+                    ImGui::Separator();
+                    ImGui::Text("Template: %s", item.ItemTemplateId.c_str());
+                    ImGui::Text("WorldObjectId: %d", item.WorldObjectId);
+                    ImGui::Text("Quantity: %d", item.Quantity);
+                    ImGui::Text("Position: %.2f / %.2f / %.2f", item.PositionX, item.PositionY, item.PositionZ);
+                    ImGui::EndTooltip();
+                }
+
+                ImGui::PopID();
+            }
+        }
+
+        ImGui::EndChild();
+
+        const bool canPickup = state.SelectedWorldItemId > 0;
+
+        if (StalkerButton("PICKUP SELECTED ITEM", ImVec2(-1.0f, 34.0f), false, !canPickup))
+        {
+            actions.PickupPressed = true;
+            actions.PickupWorldObjectId = state.SelectedWorldItemId;
+        }
+    }
+
+    void DrawGameScreen(
+        GameScreenState& state,
+        GameScreenActions& actions
+    )
+    {
+        actions = GameScreenActions{};
+
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        const ImVec2 leftPanelPos(
+            viewport->Pos.x + 22.0f,
+            viewport->Pos.y + 22.0f
+        );
+
+        const ImVec2 leftPanelSize(
+            350.0f,
+            330.0f
+        );
+
+        if (BeginStalkerPanel(
+            "##PlayerStatusPanel",
+            "PLAYER STATUS",
+            leftPanelPos,
+            leftPanelSize
+        ))
+        {
+            DrawStatBar("Health", state.Player.Health, state.Player.MaxHealth, U32(126, 42, 35, 235));
+            DrawStatBar("Stamina", state.Player.Stamina, state.Player.MaxStamina, U32(71, 126, 58, 235));
+
+            ImGui::Dummy(ImVec2(1.0f, 4.0f));
+
+            ImGui::TextColored(ColorFromBytes(194, 180, 130), "AccountId: %d", state.Player.AccountId);
+            ImGui::TextColored(ColorFromBytes(194, 180, 130), "CharacterId: %d", state.Player.CharacterId);
+
+            ImGui::Separator();
+
+            ImGui::TextColored(ColorFromBytes(194, 180, 130), "Hunger: %.0f", state.Player.Hunger);
+            ImGui::TextColored(ColorFromBytes(194, 180, 130), "Thirst: %.0f", state.Player.Thirst);
+            ImGui::TextColored(ColorFromBytes(194, 180, 130), "Radiation: %.0f", state.Player.Radiation);
+            ImGui::TextColored(ColorFromBytes(194, 180, 130), "Toxicity: %.0f", state.Player.Toxicity);
+
+            ImGui::Separator();
+
+            ImGui::TextColored(
+                ColorFromBytes(133, 127, 106),
+                "Position: %.1f / %.1f / %.1f",
+                state.Player.PosX,
+                state.Player.PosY,
+                state.Player.PosZ
+            );
+        }
+
+        EndStalkerPanel();
+
+        const ImVec2 worldPanelPos(
+            viewport->Pos.x + 22.0f,
+            viewport->Pos.y + 372.0f
+        );
+
+        const ImVec2 worldPanelSize(
+            470.0f,
+            355.0f
+        );
+
+        if (BeginStalkerPanel(
+            "##WorldItemsPanel",
+            "VISIBLE WORLD ITEMS",
+            worldPanelPos,
+            worldPanelSize
+        ))
+        {
+            DrawWorldItemsList(state, actions);
+        }
+
+        EndStalkerPanel();
+
+        const ImVec2 inventoryPanelSize(
+            430.0f,
+            420.0f
+        );
+
+        const ImVec2 inventoryPanelPos(
+            viewport->Pos.x + viewport->Size.x - inventoryPanelSize.x - 22.0f,
+            viewport->Pos.y + 22.0f
+        );
+
+        if (BeginStalkerPanel(
+            "##InventoryPanel",
+            "PLAYER INVENTORY",
+            inventoryPanelPos,
+            inventoryPanelSize
+        ))
+        {
+            if (!state.Inventory.Valid)
+            {
+                ImGui::TextColored(ColorFromBytes(170, 95, 74), "Inventory not loaded.");
+            }
+            else
+            {
+                ImGui::TextColored(
+                    ColorFromBytes(194, 180, 130),
+                    "CharacterId: %d",
+                    state.Inventory.CharacterId
+                );
+
+                ImGui::TextColored(
+                    ColorFromBytes(194, 180, 130),
+                    "Items: %d / %d",
+                    static_cast<int>(state.Inventory.Items.size()),
+                    state.Inventory.Capacity
+                );
+
+                ImGui::TextColored(
+                    ColorFromBytes(194, 180, 130),
+                    "Total weight: %.2f",
+                    state.Inventory.TotalWeight
+                );
+
+                ImGui::Dummy(ImVec2(1.0f, 6.0f));
+
+                DrawInventoryGrid(state.Inventory);
+            }
+        }
+
+        EndStalkerPanel();
+
+        const ImVec2 controlsPanelSize(
+            430.0f,
+            235.0f
+        );
+
+        const ImVec2 controlsPanelPos(
+            viewport->Pos.x + viewport->Size.x - controlsPanelSize.x - 22.0f,
+            viewport->Pos.y + 462.0f
+        );
+
+        if (BeginStalkerPanel(
+            "##ControlsPanel",
+            "CLIENT CONTROLS",
+            controlsPanelPos,
+            controlsPanelSize
+        ))
+        {
+            ImGui::TextColored(ColorFromBytes(151, 143, 113), "Movement: W/A/S/D | Rotate: Q/E");
+
+            ImGui::Dummy(ImVec2(1.0f, 6.0f));
+
+            if (StalkerButton("W / MOVE UP", ImVec2(126.0f, 34.0f)))
+                actions.MoveUpPressed = true;
+
+            ImGui::SameLine();
+
+            if (StalkerButton("S / MOVE DOWN", ImVec2(126.0f, 34.0f)))
+                actions.MoveDownPressed = true;
+
+            ImGui::SameLine();
+
+            if (StalkerButton("A / LEFT", ImVec2(126.0f, 34.0f)))
+                actions.MoveLeftPressed = true;
+
+            if (StalkerButton("D / RIGHT", ImVec2(126.0f, 34.0f)))
+                actions.MoveRightPressed = true;
+
+            ImGui::SameLine();
+
+            if (StalkerButton("Q / ROT -15", ImVec2(126.0f, 34.0f)))
+                actions.RotateLeftPressed = true;
+
+            ImGui::SameLine();
+
+            if (StalkerButton("E / ROT +15", ImVec2(126.0f, 34.0f)))
+                actions.RotateRightPressed = true;
+
+            ImGui::Dummy(ImVec2(1.0f, 8.0f));
+
+            ImGui::TextWrapped("%s", state.StatusText);
+
+            ImGui::Dummy(ImVec2(1.0f, 6.0f));
+
+            if (StalkerButton("DISCONNECT", ImVec2(-1.0f, 34.0f), true))
+                actions.DisconnectPressed = true;
+        }
+
+        EndStalkerPanel();
+    }
 }

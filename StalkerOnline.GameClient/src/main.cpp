@@ -9,11 +9,13 @@
 #include <d3d11.h>
 
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -31,7 +33,7 @@ namespace
     std::unique_ptr<NetworkClient> g_client;
 
     StalkerOnline::UI::LoginScreenState g_loginState;
-    StalkerOnline::UI::PlayerDebugStats g_playerStats;
+    StalkerOnline::UI::GameScreenState g_gameScreenState;
 
     std::atomic_bool g_running = true;
     std::atomic_bool g_authenticated = false;
@@ -85,13 +87,20 @@ namespace
         g_statusText = text;
     }
 
-    void SyncLoginState()
+    void SyncUiStatus()
     {
         std::lock_guard<std::mutex> lock(g_statusMutex);
 
         std::snprintf(
             g_loginState.StatusText,
             sizeof(g_loginState.StatusText),
+            "%s",
+            g_statusText.c_str()
+        );
+
+        std::snprintf(
+            g_gameScreenState.StatusText,
+            sizeof(g_gameScreenState.StatusText),
             "%s",
             g_statusText.c_str()
         );
@@ -201,7 +210,7 @@ namespace
         }
     }
 
-    void UpdatePlayerStatsFromNetwork()
+    void UpdateGameScreenStateFromNetwork()
     {
         if (!g_client)
             return;
@@ -217,28 +226,72 @@ namespace
 
         PlayerSnapshot player = g_client->GetPlayerSnapshot();
 
-        if (!player.Valid)
-            return;
+        if (player.Valid)
+        {
+            g_gameScreenState.Player.AccountId = player.AccountId;
+            g_gameScreenState.Player.CharacterId = player.CharacterId;
 
-        g_playerStats.AccountId = player.AccountId;
-        g_playerStats.CharacterId = player.CharacterId;
+            g_gameScreenState.Player.Health = player.Health;
+            g_gameScreenState.Player.MaxHealth = player.MaxHealth;
 
-        g_playerStats.Health = player.Health;
-        g_playerStats.MaxHealth = player.MaxHealth;
+            g_gameScreenState.Player.Stamina = player.Stamina;
+            g_gameScreenState.Player.MaxStamina = player.MaxStamina;
 
-        g_playerStats.Stamina = player.Stamina;
-        g_playerStats.MaxStamina = player.MaxStamina;
+            g_gameScreenState.Player.Hunger = player.Hunger;
+            g_gameScreenState.Player.Thirst = player.Thirst;
+            g_gameScreenState.Player.Radiation = player.Radiation;
+            g_gameScreenState.Player.Toxicity = player.Toxicity;
 
-        g_playerStats.Hunger = player.Hunger;
-        g_playerStats.Thirst = player.Thirst;
-        g_playerStats.Radiation = player.Radiation;
-        g_playerStats.Toxicity = player.Toxicity;
+            g_gameScreenState.Player.PosX = player.PositionX;
+            g_gameScreenState.Player.PosY = player.PositionY;
+            g_gameScreenState.Player.PosZ = player.PositionZ;
 
-        g_playerStats.PosX = player.PositionX;
-        g_playerStats.PosY = player.PositionY;
-        g_playerStats.PosZ = player.PositionZ;
+            g_rotationZ = player.RotationZ;
+        }
 
-        g_rotationZ = player.RotationZ;
+        InventorySnapshotView inventory = g_client->GetInventorySnapshot();
+
+        g_gameScreenState.Inventory.Valid = inventory.Valid;
+        g_gameScreenState.Inventory.CharacterId = inventory.CharacterId;
+        g_gameScreenState.Inventory.Capacity = inventory.Capacity;
+        g_gameScreenState.Inventory.TotalWeight = inventory.TotalWeight;
+        g_gameScreenState.Inventory.Items.clear();
+
+        for (const InventoryItemView& item : inventory.Items)
+        {
+            StalkerOnline::UI::InventoryItemUi uiItem;
+            uiItem.SlotIndex = item.SlotIndex;
+            uiItem.ItemTemplateId = item.ItemTemplateId;
+            uiItem.DisplayName = item.DisplayName;
+            uiItem.Quantity = item.Quantity;
+            uiItem.MaxStack = item.MaxStack;
+            uiItem.WeightPerItem = item.WeightPerItem;
+
+            g_gameScreenState.Inventory.Items.push_back(std::move(uiItem));
+        }
+
+        std::vector<WorldItemView> worldItems = g_client->GetWorldItemsSnapshot();
+
+        g_gameScreenState.WorldItems.clear();
+
+        for (const WorldItemView& item : worldItems)
+        {
+            StalkerOnline::UI::WorldItemUi uiItem;
+            uiItem.WorldObjectId = item.WorldObjectId;
+            uiItem.ItemTemplateId = item.ItemTemplateId;
+            uiItem.DisplayName = item.DisplayName;
+            uiItem.Quantity = item.Quantity;
+
+            uiItem.PositionX = item.PositionX;
+            uiItem.PositionY = item.PositionY;
+            uiItem.PositionZ = item.PositionZ;
+
+            uiItem.RotationX = item.RotationX;
+            uiItem.RotationY = item.RotationY;
+            uiItem.RotationZ = item.RotationZ;
+
+            g_gameScreenState.WorldItems.push_back(std::move(uiItem));
+        }
     }
 
     void RunLogin()
@@ -392,7 +445,10 @@ namespace
     void SendMove(float directionX, float directionY)
     {
         if (!g_client || !g_client->IsConnected())
+        {
+            SetStatus("Move failed: not connected");
             return;
+        }
 
         g_client->SendMoveRequest(directionX, directionY, g_rotationZ);
     }
@@ -408,12 +464,34 @@ namespace
             g_rotationZ += 360.0f;
 
         if (!g_client || !g_client->IsConnected())
+        {
+            SetStatus("Rotate failed: not connected");
             return;
+        }
 
         g_client->SendMoveRequest(0.0f, 0.0f, g_rotationZ);
     }
 
-    void HandleGameInput()
+    void PickupWorldItem(int32_t worldObjectId)
+    {
+        if (worldObjectId <= 0)
+        {
+            SetStatus("Pickup failed: invalid world item");
+            return;
+        }
+
+        if (!g_client || !g_client->IsConnected())
+        {
+            SetStatus("Pickup failed: not connected");
+            return;
+        }
+
+        g_client->SendPickupItemRequest(worldObjectId);
+
+        SetStatus("Pickup request sent. WorldObjectId=" + std::to_string(worldObjectId));
+    }
+
+    void HandleKeyboardGameInput()
     {
         if (!g_authenticated.load())
             return;
@@ -440,6 +518,36 @@ namespace
 
         if (ImGui::IsKeyPressed(ImGuiKey_E))
             RotatePlayer(15.0f);
+
+        if (ImGui::IsKeyPressed(ImGuiKey_F))
+            PickupWorldItem(g_gameScreenState.SelectedWorldItemId);
+    }
+
+    void HandleGameScreenActions(const StalkerOnline::UI::GameScreenActions& actions)
+    {
+        if (actions.MoveUpPressed)
+            SendMove(0.0f, 1.0f);
+
+        if (actions.MoveDownPressed)
+            SendMove(0.0f, -1.0f);
+
+        if (actions.MoveLeftPressed)
+            SendMove(-1.0f, 0.0f);
+
+        if (actions.MoveRightPressed)
+            SendMove(1.0f, 0.0f);
+
+        if (actions.RotateLeftPressed)
+            RotatePlayer(-15.0f);
+
+        if (actions.RotateRightPressed)
+            RotatePlayer(15.0f);
+
+        if (actions.PickupPressed)
+            PickupWorldItem(actions.PickupWorldObjectId);
+
+        if (actions.DisconnectPressed)
+            RunDisconnect();
     }
 }
 
@@ -590,8 +698,8 @@ int WINAPI wWinMain(
         if (!g_running.load())
             break;
 
-        UpdatePlayerStatsFromNetwork();
-        SyncLoginState();
+        UpdateGameScreenStateFromNetwork();
+        SyncUiStatus();
 
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
@@ -602,9 +710,6 @@ int WINAPI wWinMain(
         bool loginPressed = false;
         bool registerPressed = false;
         bool exitPressed = false;
-
-        bool openInventoryPressed = false;
-        bool disconnectPressed = false;
 
         if (!g_authenticated.load())
         {
@@ -626,19 +731,16 @@ int WINAPI wWinMain(
         }
         else
         {
-            HandleGameInput();
+            HandleKeyboardGameInput();
 
-            StalkerOnline::UI::DrawGameHudMock(
-                g_playerStats,
-                openInventoryPressed,
-                disconnectPressed
+            StalkerOnline::UI::GameScreenActions actions;
+
+            StalkerOnline::UI::DrawGameScreen(
+                g_gameScreenState,
+                actions
             );
 
-            if (openInventoryPressed)
-                SetStatus("Inventory UI will be added next");
-
-            if (disconnectPressed)
-                RunDisconnect();
+            HandleGameScreenActions(actions);
         }
 
         ImGui::Render();

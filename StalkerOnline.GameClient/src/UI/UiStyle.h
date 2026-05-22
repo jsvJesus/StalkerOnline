@@ -2,6 +2,10 @@
 
 #include <imgui.h>
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 namespace StalkerOnline::UI
 {
     struct LoginScreenState
@@ -39,6 +43,76 @@ namespace StalkerOnline::UI
         float PosZ = 0.0f;
     };
 
+    struct InventoryItemUi
+    {
+        int32_t SlotIndex = 0;
+
+        std::string ItemTemplateId;
+        std::string DisplayName;
+
+        int32_t Quantity = 0;
+        int32_t MaxStack = 1;
+
+        float WeightPerItem = 0.0f;
+    };
+
+    struct InventorySnapshotUi
+    {
+        bool Valid = false;
+
+        int32_t CharacterId = 0;
+        int32_t Capacity = 0;
+
+        float TotalWeight = 0.0f;
+
+        std::vector<InventoryItemUi> Items;
+    };
+
+    struct WorldItemUi
+    {
+        int32_t WorldObjectId = 0;
+
+        std::string ItemTemplateId;
+        std::string DisplayName;
+
+        int32_t Quantity = 0;
+
+        float PositionX = 0.0f;
+        float PositionY = 0.0f;
+        float PositionZ = 0.0f;
+
+        float RotationX = 0.0f;
+        float RotationY = 0.0f;
+        float RotationZ = 0.0f;
+    };
+
+    struct GameScreenState
+    {
+        PlayerDebugStats Player;
+        InventorySnapshotUi Inventory;
+        std::vector<WorldItemUi> WorldItems;
+
+        int32_t SelectedWorldItemId = 0;
+
+        char StatusText[256] = "Ready";
+    };
+
+    struct GameScreenActions
+    {
+        bool MoveUpPressed = false;
+        bool MoveDownPressed = false;
+        bool MoveLeftPressed = false;
+        bool MoveRightPressed = false;
+
+        bool RotateLeftPressed = false;
+        bool RotateRightPressed = false;
+
+        bool PickupPressed = false;
+        int32_t PickupWorldObjectId = 0;
+
+        bool DisconnectPressed = false;
+    };
+
     void ApplyStalkerDarkStyle();
 
     void DrawZoneBackground(float timeSeconds);
@@ -71,5 +145,10 @@ namespace StalkerOnline::UI
         const PlayerDebugStats& stats,
         bool& outOpenInventoryPressed,
         bool& outDisconnectPressed
+    );
+
+    void DrawGameScreen(
+        GameScreenState& state,
+        GameScreenActions& actions
     );
 }
