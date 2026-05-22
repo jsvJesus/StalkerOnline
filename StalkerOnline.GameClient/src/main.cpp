@@ -1,68 +1,54 @@
 #include "NetworkClient.h"
 #include "UI/UiStyle.h"
-#include <windows.h>
 
+#include <imgui.h>
+#include <backends/imgui_impl_win32.h>
+#include <backends/imgui_impl_dx11.h>
+
+#include <windows.h>
+#include <d3d11.h>
+
+#include <atomic>
+#include <cstdio>
 #include <memory>
-#include <sstream>
+#include <mutex>
 #include <string>
 #include <thread>
-#include <vector>
 
 namespace
 {
-    constexpr int WindowWidth = 1120;
-    constexpr int WindowHeight = 760;
+    constexpr int WindowWidth = 1280;
+    constexpr int WindowHeight = 800;
 
-    constexpr int IdHostEdit = 1001;
-    constexpr int IdPortEdit = 1002;
-    constexpr int IdLoginEdit = 1003;
-    constexpr int IdEmailEdit = 1004;
-    constexpr int IdPasswordEdit = 1005;
+    constexpr const char* DefaultServerHost = "26.163.92.76";
+    constexpr uint16_t DefaultServerPort = 7777;
 
-    constexpr int IdLoginButton = 2001;
-    constexpr int IdRegisterButton = 2002;
-    constexpr int IdDisconnectButton = 2003;
-
-    constexpr int IdPlayerInfo = 3001;
-    constexpr int IdInventoryList = 3002;
-    constexpr int IdWorldItemsList = 3003;
-    constexpr int IdLogEdit = 3004;
-
-    constexpr int IdMoveUpButton = 4001;
-    constexpr int IdMoveDownButton = 4002;
-    constexpr int IdMoveLeftButton = 4003;
-    constexpr int IdMoveRightButton = 4004;
-    constexpr int IdRotateLeftButton = 4005;
-    constexpr int IdRotateRightButton = 4006;
-    constexpr int IdPickupButton = 4007;
-
-    constexpr UINT WmAppendLog = WM_APP + 1;
-    constexpr UINT WmSetAuthControlsEnabled = WM_APP + 2;
-    constexpr UINT WmRefreshGameUi = WM_APP + 3;
-
-    HWND g_mainWindow = nullptr;
-
-    HWND g_hostEdit = nullptr;
-    HWND g_portEdit = nullptr;
-    HWND g_loginEdit = nullptr;
-    HWND g_emailEdit = nullptr;
-    HWND g_passwordEdit = nullptr;
-
-    HWND g_playerInfo = nullptr;
-    HWND g_inventoryList = nullptr;
-    HWND g_worldItemsList = nullptr;
-    HWND g_logEdit = nullptr;
+    ID3D11Device* g_d3dDevice = nullptr;
+    ID3D11DeviceContext* g_d3dDeviceContext = nullptr;
+    IDXGISwapChain* g_swapChain = nullptr;
+    ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
 
     std::unique_ptr<NetworkClient> g_client;
+
+    StalkerOnline::UI::LoginScreenState g_loginState;
+    StalkerOnline::UI::PlayerDebugStats g_playerStats;
+
+    std::atomic_bool g_running = true;
+    std::atomic_bool g_authenticated = false;
+    std::atomic_bool g_busy = false;
+    std::atomic_bool g_connected = false;
+
+    std::mutex g_statusMutex;
+    std::string g_statusText = "Disconnected";
 
     float g_rotationZ = 0.0f;
 
     std::string WideToUtf8(const std::wstring& value)
     {
         if (value.empty())
-            return "";
+            return {};
 
-        int requiredSize = WideCharToMultiByte(
+        const int requiredSize = WideCharToMultiByte(
             CP_UTF8,
             0,
             value.data(),
@@ -70,10 +56,11 @@ namespace
             nullptr,
             0,
             nullptr,
-            nullptr);
+            nullptr
+        );
 
         if (requiredSize <= 0)
-            return "";
+            return {};
 
         std::string result;
         result.resize(static_cast<size_t>(requiredSize));
@@ -86,408 +73,307 @@ namespace
             result.data(),
             requiredSize,
             nullptr,
-            nullptr);
+            nullptr
+        );
 
         return result;
     }
 
-    std::wstring Utf8ToWide(const std::string& value)
+    void SetStatus(const std::string& text)
     {
-        if (value.empty())
-            return L"";
+        std::lock_guard<std::mutex> lock(g_statusMutex);
+        g_statusText = text;
+    }
 
-        int requiredSize = MultiByteToWideChar(
-            CP_UTF8,
+    void SyncLoginState()
+    {
+        std::lock_guard<std::mutex> lock(g_statusMutex);
+
+        std::snprintf(
+            g_loginState.StatusText,
+            sizeof(g_loginState.StatusText),
+            "%s",
+            g_statusText.c_str()
+        );
+
+        g_loginState.IsConnected = g_connected.load();
+        g_loginState.IsBusy = g_busy.load();
+    }
+
+    void CreateRenderTarget()
+    {
+        ID3D11Texture2D* backBuffer = nullptr;
+
+        g_swapChain->GetBuffer(
             0,
-            value.data(),
-            static_cast<int>(value.size()),
+            IID_PPV_ARGS(&backBuffer)
+        );
+
+        if (backBuffer)
+        {
+            g_d3dDevice->CreateRenderTargetView(
+                backBuffer,
+                nullptr,
+                &g_mainRenderTargetView
+            );
+
+            backBuffer->Release();
+        }
+    }
+
+    void CleanupRenderTarget()
+    {
+        if (g_mainRenderTargetView)
+        {
+            g_mainRenderTargetView->Release();
+            g_mainRenderTargetView = nullptr;
+        }
+    }
+
+    bool CreateDeviceD3D(HWND hwnd)
+    {
+        DXGI_SWAP_CHAIN_DESC swapChainDesc{};
+        swapChainDesc.BufferCount = 2;
+        swapChainDesc.BufferDesc.Width = 0;
+        swapChainDesc.BufferDesc.Height = 0;
+        swapChainDesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        swapChainDesc.BufferDesc.RefreshRate.Numerator = 60;
+        swapChainDesc.BufferDesc.RefreshRate.Denominator = 1;
+        swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        swapChainDesc.OutputWindow = hwnd;
+        swapChainDesc.SampleDesc.Count = 1;
+        swapChainDesc.SampleDesc.Quality = 0;
+        swapChainDesc.Windowed = TRUE;
+        swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+        UINT createDeviceFlags = 0;
+
+        D3D_FEATURE_LEVEL featureLevel;
+        const D3D_FEATURE_LEVEL featureLevelArray[2] =
+        {
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_0
+        };
+
+        HRESULT result = D3D11CreateDeviceAndSwapChain(
             nullptr,
-            0);
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            createDeviceFlags,
+            featureLevelArray,
+            2,
+            D3D11_SDK_VERSION,
+            &swapChainDesc,
+            &g_swapChain,
+            &g_d3dDevice,
+            &featureLevel,
+            &g_d3dDeviceContext
+        );
 
-        if (requiredSize <= 0)
-            return L"";
+        if (FAILED(result))
+            return false;
 
-        std::wstring result;
-        result.resize(static_cast<size_t>(requiredSize));
-
-        MultiByteToWideChar(
-            CP_UTF8,
-            0,
-            value.data(),
-            static_cast<int>(value.size()),
-            result.data(),
-            requiredSize);
-
-        return result;
+        CreateRenderTarget();
+        return true;
     }
 
-    std::wstring GetWindowTextValue(HWND hwnd)
+    void CleanupDeviceD3D()
     {
-        int length = GetWindowTextLengthW(hwnd);
+        CleanupRenderTarget();
 
-        if (length <= 0)
-            return L"";
-
-        std::vector<wchar_t> buffer;
-        buffer.resize(static_cast<size_t>(length) + 1);
-
-        GetWindowTextW(hwnd, buffer.data(), length + 1);
-
-        return std::wstring(buffer.data());
-    }
-
-    uint16_t ReadPort()
-    {
-        std::wstring portText = GetWindowTextValue(g_portEdit);
-
-        try
+        if (g_swapChain)
         {
-            int port = std::stoi(portText);
-
-            if (port <= 0 || port > 65535)
-                return 7777;
-
-            return static_cast<uint16_t>(port);
+            g_swapChain->Release();
+            g_swapChain = nullptr;
         }
-        catch (...)
+
+        if (g_d3dDeviceContext)
         {
-            return 7777;
+            g_d3dDeviceContext->Release();
+            g_d3dDeviceContext = nullptr;
+        }
+
+        if (g_d3dDevice)
+        {
+            g_d3dDevice->Release();
+            g_d3dDevice = nullptr;
         }
     }
 
-    void AppendLogDirect(const std::wstring& text)
-    {
-        if (!g_logEdit)
-            return;
-
-        int length = GetWindowTextLengthW(g_logEdit);
-
-        SendMessageW(
-            g_logEdit,
-            EM_SETSEL,
-            static_cast<WPARAM>(length),
-            static_cast<LPARAM>(length));
-
-        std::wstring line = text + L"\r\n";
-
-        SendMessageW(
-            g_logEdit,
-            EM_REPLACESEL,
-            FALSE,
-            reinterpret_cast<LPARAM>(line.c_str()));
-    }
-
-    void PostLog(const std::wstring& text)
-    {
-        if (!g_mainWindow)
-            return;
-
-        auto* heapText = new std::wstring(text);
-
-        PostMessageW(
-            g_mainWindow,
-            WmAppendLog,
-            0,
-            reinterpret_cast<LPARAM>(heapText));
-    }
-
-    void PostRefreshGameUi()
-    {
-        if (!g_mainWindow)
-            return;
-
-        PostMessageW(g_mainWindow, WmRefreshGameUi, 0, 0);
-    }
-
-    void SetAuthControlsEnabledDirect(bool enabled)
-    {
-        EnableWindow(g_hostEdit, enabled);
-        EnableWindow(g_portEdit, enabled);
-        EnableWindow(g_loginEdit, enabled);
-        EnableWindow(g_emailEdit, enabled);
-        EnableWindow(g_passwordEdit, enabled);
-
-        EnableWindow(GetDlgItem(g_mainWindow, IdLoginButton), enabled);
-        EnableWindow(GetDlgItem(g_mainWindow, IdRegisterButton), enabled);
-    }
-
-    void SetGameControlsEnabledDirect(bool enabled)
-    {
-        EnableWindow(GetDlgItem(g_mainWindow, IdMoveUpButton), enabled);
-        EnableWindow(GetDlgItem(g_mainWindow, IdMoveDownButton), enabled);
-        EnableWindow(GetDlgItem(g_mainWindow, IdMoveLeftButton), enabled);
-        EnableWindow(GetDlgItem(g_mainWindow, IdMoveRightButton), enabled);
-        EnableWindow(GetDlgItem(g_mainWindow, IdRotateLeftButton), enabled);
-        EnableWindow(GetDlgItem(g_mainWindow, IdRotateRightButton), enabled);
-        EnableWindow(GetDlgItem(g_mainWindow, IdPickupButton), enabled);
-        EnableWindow(g_worldItemsList, enabled);
-    }
-
-    void PostSetAuthControlsEnabled(bool enabled)
-    {
-        PostMessageW(
-            g_mainWindow,
-            WmSetAuthControlsEnabled,
-            static_cast<WPARAM>(enabled ? 1 : 0),
-            0);
-    }
-
-    void RefreshPlayerUi()
-    {
-        PlayerSnapshot player = g_client->GetPlayerSnapshot();
-
-        std::wstringstream ss;
-
-        if (!player.Valid)
-        {
-            ss << L"Player: not loaded";
-        }
-        else
-        {
-            ss
-                << L"Player: " << Utf8ToWide(player.Nickname)
-                << L" | CharacterId: " << player.CharacterId
-                << L" | Pos: X=" << player.PositionX
-                << L" Y=" << player.PositionY
-                << L" Z=" << player.PositionZ
-                << L" | RotZ=" << player.RotationZ
-                << L"\r\n"
-                << L"HP: " << player.Health << L"/" << player.MaxHealth
-                << L" | Stamina: " << player.Stamina << L"/" << player.MaxStamina
-                << L" | Hunger: " << player.Hunger
-                << L" | Thirst: " << player.Thirst
-                << L" | Rad: " << player.Radiation
-                << L" | Toxic: " << player.Toxicity
-                << L" | Alive: " << (player.IsAlive ? L"true" : L"false");
-
-            g_rotationZ = player.RotationZ;
-        }
-
-        SetWindowTextW(g_playerInfo, ss.str().c_str());
-    }
-
-    void RefreshInventoryUi()
-    {
-        InventorySnapshotView inventory = g_client->GetInventorySnapshot();
-
-        SendMessageW(g_inventoryList, LB_RESETCONTENT, 0, 0);
-
-        if (!inventory.Valid)
-        {
-            SendMessageW(g_inventoryList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Inventory not loaded"));
-            return;
-        }
-
-        std::wstringstream header;
-        header
-            << L"Items: " << inventory.Items.size()
-            << L"/" << inventory.Capacity
-            << L" | Weight: " << inventory.TotalWeight;
-
-        SendMessageW(g_inventoryList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(header.str().c_str()));
-        SendMessageW(g_inventoryList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"--------------------------------"));
-
-        for (const InventoryItemView& item : inventory.Items)
-        {
-            std::wstringstream ss;
-            ss
-                << L"Slot " << item.SlotIndex
-                << L": " << Utf8ToWide(item.DisplayName)
-                << L" [" << Utf8ToWide(item.ItemTemplateId) << L"]"
-                << L" x" << item.Quantity << L"/" << item.MaxStack
-                << L" | W=" << item.WeightPerItem;
-
-            SendMessageW(g_inventoryList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(ss.str().c_str()));
-        }
-    }
-
-    void RefreshWorldItemsUi()
-    {
-        std::vector<WorldItemView> items = g_client->GetWorldItemsSnapshot();
-
-        SendMessageW(g_worldItemsList, LB_RESETCONTENT, 0, 0);
-
-        if (items.empty())
-        {
-            SendMessageW(g_worldItemsList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"No visible world items"));
-            SendMessageW(g_worldItemsList, LB_SETITEMDATA, 0, static_cast<LPARAM>(0));
-            return;
-        }
-
-        for (const WorldItemView& item : items)
-        {
-            std::wstringstream ss;
-            ss
-                << L"Id " << item.WorldObjectId
-                << L": " << Utf8ToWide(item.DisplayName)
-                << L" x" << item.Quantity
-                << L" | Pos=(" << item.PositionX
-                << L", " << item.PositionY
-                << L", " << item.PositionZ << L")";
-
-            LRESULT index = SendMessageW(
-                g_worldItemsList,
-                LB_ADDSTRING,
-                0,
-                reinterpret_cast<LPARAM>(ss.str().c_str()));
-
-            if (index != LB_ERR && index != LB_ERRSPACE)
-            {
-                SendMessageW(
-                    g_worldItemsList,
-                    LB_SETITEMDATA,
-                    static_cast<WPARAM>(index),
-                    static_cast<LPARAM>(item.WorldObjectId));
-            }
-        }
-
-        SendMessageW(g_worldItemsList, LB_SETCURSEL, 0, 0);
-    }
-
-    void RefreshGameUi()
+    void UpdatePlayerStatsFromNetwork()
     {
         if (!g_client)
             return;
 
-        RefreshPlayerUi();
-        RefreshInventoryUi();
-        RefreshWorldItemsUi();
+        const bool connected = g_client->IsConnected();
+        g_connected.store(connected);
 
-        bool connected = g_client->IsConnected();
-        SetGameControlsEnabledDirect(connected);
+        if (!connected && g_authenticated.load())
+        {
+            g_authenticated.store(false);
+            SetStatus("Disconnected");
+        }
+
+        PlayerSnapshot player = g_client->GetPlayerSnapshot();
+
+        if (!player.Valid)
+            return;
+
+        g_playerStats.AccountId = player.AccountId;
+        g_playerStats.CharacterId = player.CharacterId;
+
+        g_playerStats.Health = player.Health;
+        g_playerStats.MaxHealth = player.MaxHealth;
+
+        g_playerStats.Stamina = player.Stamina;
+        g_playerStats.MaxStamina = player.MaxStamina;
+
+        g_playerStats.Hunger = player.Hunger;
+        g_playerStats.Thirst = player.Thirst;
+        g_playerStats.Radiation = player.Radiation;
+        g_playerStats.Toxicity = player.Toxicity;
+
+        g_playerStats.PosX = player.PositionX;
+        g_playerStats.PosY = player.PositionY;
+        g_playerStats.PosZ = player.PositionZ;
+
+        g_rotationZ = player.RotationZ;
     }
 
     void RunLogin()
     {
-        std::wstring hostWide = GetWindowTextValue(g_hostEdit);
-        std::wstring loginWide = GetWindowTextValue(g_loginEdit);
-        std::wstring passwordWide = GetWindowTextValue(g_passwordEdit);
-
-        std::string host = WideToUtf8(hostWide);
-        std::string login = WideToUtf8(loginWide);
-        std::string password = WideToUtf8(passwordWide);
-
-        uint16_t port = ReadPort();
-
-        if (host.empty())
-        {
-            PostLog(L"[UI] Host is empty.");
+        if (g_busy.load())
             return;
-        }
+
+        const std::string login = g_loginState.Login;
+        const std::string password = g_loginState.Password;
 
         if (login.empty())
         {
-            PostLog(L"[UI] Login is empty.");
+            SetStatus("Login is empty");
             return;
         }
 
         if (password.empty())
         {
-            PostLog(L"[UI] Password is empty.");
+            SetStatus("Password is empty");
             return;
         }
 
-        PostSetAuthControlsEnabled(false);
+        g_busy.store(true);
+        SetStatus("Connecting...");
 
-        std::thread([host, port, login, password]()
+        std::thread([login, password]()
         {
-            PostLog(L"[CLIENT] Connecting...");
-
-            if (!g_client->Connect(host, port))
+            if (!g_client)
             {
-                PostLog(L"[CLIENT] Connect failed.");
-                PostSetAuthControlsEnabled(true);
-                PostRefreshGameUi();
+                g_busy.store(false);
+                SetStatus("Network client is not created");
                 return;
             }
+
+            if (!g_client->IsConnected())
+            {
+                if (!g_client->Connect(DefaultServerHost, DefaultServerPort))
+                {
+                    g_connected.store(false);
+                    g_busy.store(false);
+                    SetStatus("Connect failed");
+                    return;
+                }
+            }
+
+            g_connected.store(true);
+            SetStatus("Sending login request...");
 
             LoginResult result = g_client->Login(login, password);
 
-            PostLog(
-                L"[LOGIN] Success=" +
-                std::wstring(result.Success ? L"true" : L"false") +
-                L", Message=" +
-                Utf8ToWide(result.Message));
-
             if (!result.Success)
             {
-                PostSetAuthControlsEnabled(true);
-                PostRefreshGameUi();
+                g_authenticated.store(false);
+                g_busy.store(false);
+                SetStatus("Login failed: " + result.Message);
+                g_client->Stop();
+                g_connected.store(false);
                 return;
             }
 
-            g_client->StartReceiveLoop();
-            PostRefreshGameUi();
+            g_authenticated.store(true);
+            g_busy.store(false);
 
+            SetStatus("Login success: " + result.Message);
+
+            g_client->StartReceiveLoop();
         }).detach();
     }
 
     void RunRegister()
     {
-        std::wstring hostWide = GetWindowTextValue(g_hostEdit);
-        std::wstring loginWide = GetWindowTextValue(g_loginEdit);
-        std::wstring emailWide = GetWindowTextValue(g_emailEdit);
-        std::wstring passwordWide = GetWindowTextValue(g_passwordEdit);
-
-        std::string host = WideToUtf8(hostWide);
-        std::string login = WideToUtf8(loginWide);
-        std::string email = WideToUtf8(emailWide);
-        std::string password = WideToUtf8(passwordWide);
-
-        uint16_t port = ReadPort();
-
-        if (host.empty())
-        {
-            PostLog(L"[UI] Host is empty.");
+        if (g_busy.load())
             return;
-        }
+
+        const std::string login = g_loginState.Login;
+        const std::string email = g_loginState.Email;
+        const std::string password = g_loginState.Password;
 
         if (login.empty())
         {
-            PostLog(L"[UI] Login is empty.");
+            SetStatus("Login is empty");
             return;
         }
 
         if (email.empty())
         {
-            PostLog(L"[UI] Email is empty.");
+            SetStatus("Email is empty");
             return;
         }
 
         if (password.empty())
         {
-            PostLog(L"[UI] Password is empty.");
+            SetStatus("Password is empty");
             return;
         }
 
-        PostSetAuthControlsEnabled(false);
+        g_busy.store(true);
+        SetStatus("Connecting...");
 
-        std::thread([host, port, login, email, password]()
+        std::thread([login, email, password]()
         {
-            PostLog(L"[CLIENT] Connecting...");
-
-            if (!g_client->Connect(host, port))
+            if (!g_client)
             {
-                PostLog(L"[CLIENT] Connect failed.");
-                PostSetAuthControlsEnabled(true);
-                PostRefreshGameUi();
+                g_busy.store(false);
+                SetStatus("Network client is not created");
                 return;
             }
 
+            if (!g_client->IsConnected())
+            {
+                if (!g_client->Connect(DefaultServerHost, DefaultServerPort))
+                {
+                    g_connected.store(false);
+                    g_busy.store(false);
+                    SetStatus("Connect failed");
+                    return;
+                }
+            }
+
+            g_connected.store(true);
+            SetStatus("Sending register request...");
+
             RegisterResult result = g_client->Register(login, email, password);
 
-            std::wstringstream ss;
-            ss
-                << L"[REGISTER] Success=" << (result.Success ? L"true" : L"false")
-                << L", AccountId=" << result.AccountId
-                << L", Login=" << Utf8ToWide(result.Login)
-                << L", Message=" << Utf8ToWide(result.Message);
+            g_busy.store(false);
 
-            PostLog(ss.str());
+            if (!result.Success)
+            {
+                SetStatus("Register failed: " + result.Message);
+                g_client->Stop();
+                g_connected.store(false);
+                return;
+            }
 
-            PostSetAuthControlsEnabled(true);
-            PostRefreshGameUi();
-
+            SetStatus("Register success. Account created: " + result.Login);
         }).detach();
     }
 
@@ -496,18 +382,17 @@ namespace
         if (g_client)
             g_client->Stop();
 
-        PostSetAuthControlsEnabled(true);
-        PostLog(L"[CLIENT] Disconnected.");
-        PostRefreshGameUi();
+        g_authenticated.store(false);
+        g_connected.store(false);
+        g_busy.store(false);
+
+        SetStatus("Disconnected");
     }
 
     void SendMove(float directionX, float directionY)
     {
         if (!g_client || !g_client->IsConnected())
-        {
-            PostLog(L"[MOVE] Not connected.");
             return;
-        }
 
         g_client->SendMoveRequest(directionX, directionY, g_rotationZ);
     }
@@ -523,483 +408,273 @@ namespace
             g_rotationZ += 360.0f;
 
         if (!g_client || !g_client->IsConnected())
-        {
-            PostLog(L"[ROTATE] Not connected.");
             return;
-        }
 
         g_client->SendMoveRequest(0.0f, 0.0f, g_rotationZ);
     }
 
-    void PickupSelectedWorldItem()
+    void HandleGameInput()
     {
-        if (!g_client || !g_client->IsConnected())
-        {
-            PostLog(L"[PICKUP] Not connected.");
+        if (!g_authenticated.load())
             return;
-        }
 
-        LRESULT selectedIndex = SendMessageW(g_worldItemsList, LB_GETCURSEL, 0, 0);
+        ImGuiIO& io = ImGui::GetIO();
 
-        if (selectedIndex == LB_ERR)
-        {
-            PostLog(L"[PICKUP] No selected world item.");
+        if (io.WantCaptureKeyboard)
             return;
-        }
 
-        LRESULT itemData = SendMessageW(
-            g_worldItemsList,
-            LB_GETITEMDATA,
-            static_cast<WPARAM>(selectedIndex),
-            0);
+        if (ImGui::IsKeyPressed(ImGuiKey_W))
+            SendMove(0.0f, 1.0f);
 
-        if (itemData == LB_ERR || itemData <= 0)
+        if (ImGui::IsKeyPressed(ImGuiKey_S))
+            SendMove(0.0f, -1.0f);
+
+        if (ImGui::IsKeyPressed(ImGuiKey_A))
+            SendMove(-1.0f, 0.0f);
+
+        if (ImGui::IsKeyPressed(ImGuiKey_D))
+            SendMove(1.0f, 0.0f);
+
+        if (ImGui::IsKeyPressed(ImGuiKey_Q))
+            RotatePlayer(-15.0f);
+
+        if (ImGui::IsKeyPressed(ImGuiKey_E))
+            RotatePlayer(15.0f);
+    }
+}
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam
+);
+
+LRESULT WINAPI WindowProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam
+)
+{
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, message, wParam, lParam))
+        return true;
+
+    switch (message)
+    {
+        case WM_SIZE:
         {
-            PostLog(L"[PICKUP] Invalid selected item.");
-            return;
+            if (g_d3dDevice != nullptr && wParam != SIZE_MINIMIZED)
+            {
+                CleanupRenderTarget();
+
+                g_swapChain->ResizeBuffers(
+                    0,
+                    static_cast<UINT>(LOWORD(lParam)),
+                    static_cast<UINT>(HIWORD(lParam)),
+                    DXGI_FORMAT_UNKNOWN,
+                    0
+                );
+
+                CreateRenderTarget();
+            }
+
+            return 0;
         }
 
-        int32_t worldObjectId = static_cast<int32_t>(itemData);
-
-        g_client->SendPickupItemRequest(worldObjectId);
-    }
-
-    HWND CreateLabel(
-        HWND parent,
-        const wchar_t* text,
-        int x,
-        int y,
-        int w,
-        int h)
-    {
-        return CreateWindowExW(
-            0,
-            L"STATIC",
-            text,
-            WS_CHILD | WS_VISIBLE,
-            x,
-            y,
-            w,
-            h,
-            parent,
-            nullptr,
-            GetModuleHandleW(nullptr),
-            nullptr);
-    }
-
-    HWND CreateStaticBox(
-        HWND parent,
-        int id,
-        const wchar_t* text,
-        int x,
-        int y,
-        int w,
-        int h)
-    {
-        return CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            L"STATIC",
-            text,
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            x,
-            y,
-            w,
-            h,
-            parent,
-            reinterpret_cast<HMENU>(static_cast<intptr_t>(id)),
-            GetModuleHandleW(nullptr),
-            nullptr);
-    }
-
-    HWND CreateEdit(
-        HWND parent,
-        int id,
-        const wchar_t* text,
-        int x,
-        int y,
-        int w,
-        int h,
-        bool password = false)
-    {
-        DWORD style =
-            WS_CHILD |
-            WS_VISIBLE |
-            WS_BORDER |
-            ES_AUTOHSCROLL;
-
-        if (password)
-            style |= ES_PASSWORD;
-
-        return CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            L"EDIT",
-            text,
-            style,
-            x,
-            y,
-            w,
-            h,
-            parent,
-            reinterpret_cast<HMENU>(static_cast<intptr_t>(id)),
-            GetModuleHandleW(nullptr),
-            nullptr);
-    }
-
-    HWND CreateButton(
-        HWND parent,
-        int id,
-        const wchar_t* text,
-        int x,
-        int y,
-        int w,
-        int h)
-    {
-        return CreateWindowExW(
-            0,
-            L"BUTTON",
-            text,
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            x,
-            y,
-            w,
-            h,
-            parent,
-            reinterpret_cast<HMENU>(static_cast<intptr_t>(id)),
-            GetModuleHandleW(nullptr),
-            nullptr);
-    }
-
-    HWND CreateListBox(
-        HWND parent,
-        int id,
-        int x,
-        int y,
-        int w,
-        int h)
-    {
-        return CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            L"LISTBOX",
-            L"",
-            WS_CHILD |
-            WS_VISIBLE |
-            WS_BORDER |
-            WS_VSCROLL |
-            LBS_NOTIFY,
-            x,
-            y,
-            w,
-            h,
-            parent,
-            reinterpret_cast<HMENU>(static_cast<intptr_t>(id)),
-            GetModuleHandleW(nullptr),
-            nullptr);
-    }
-
-    void ApplyDefaultFont(HWND hwnd)
-    {
-        HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    }
-
-    void ApplyFontToChildren(HWND parent)
-    {
-        ApplyDefaultFont(parent);
-
-        HWND child = GetWindow(parent, GW_CHILD);
-
-        while (child)
+        case WM_SYSCOMMAND:
         {
-            ApplyDefaultFont(child);
-            child = GetWindow(child, GW_HWNDNEXT);
+            if ((wParam & 0xfff0) == SC_KEYMENU)
+                return 0;
+
+            break;
         }
-    }
 
-    void CreateUi(HWND hwnd)
-    {
-        CreateLabel(hwnd, L"Server IP:", 20, 20, 90, 24);
-        g_hostEdit = CreateEdit(hwnd, IdHostEdit, L"26.163.92.76", 120, 18, 180, 26);
-
-        CreateLabel(hwnd, L"Port:", 320, 20, 50, 24);
-        g_portEdit = CreateEdit(hwnd, IdPortEdit, L"7777", 370, 18, 80, 26);
-
-        CreateLabel(hwnd, L"Login:", 20, 60, 90, 24);
-        g_loginEdit = CreateEdit(hwnd, IdLoginEdit, L"", 120, 58, 250, 26);
-
-        CreateLabel(hwnd, L"Email:", 400, 60, 50, 24);
-        g_emailEdit = CreateEdit(hwnd, IdEmailEdit, L"", 460, 58, 250, 26);
-
-        CreateLabel(hwnd, L"Password:", 20, 100, 90, 24);
-        g_passwordEdit = CreateEdit(hwnd, IdPasswordEdit, L"", 120, 98, 250, 26, true);
-
-        CreateButton(hwnd, IdLoginButton, L"Login", 390, 96, 110, 32);
-        CreateButton(hwnd, IdRegisterButton, L"Register", 515, 96, 110, 32);
-        CreateButton(hwnd, IdDisconnectButton, L"Disconnect", 640, 96, 120, 32);
-
-        g_playerInfo = CreateStaticBox(
-            hwnd,
-            IdPlayerInfo,
-            L"Player: not loaded",
-            20,
-            150,
-            1060,
-            70);
-
-        CreateLabel(hwnd, L"Visible World Items", 20, 235, 220, 24);
-        g_worldItemsList = CreateListBox(hwnd, IdWorldItemsList, 20, 260, 520, 210);
-
-        CreateLabel(hwnd, L"Inventory", 560, 235, 220, 24);
-        g_inventoryList = CreateListBox(hwnd, IdInventoryList, 560, 260, 520, 210);
-
-        CreateLabel(hwnd, L"Movement", 20, 490, 150, 24);
-
-        CreateButton(hwnd, IdMoveUpButton, L"W / Up", 125, 490, 90, 32);
-        CreateButton(hwnd, IdMoveLeftButton, L"A / Left", 25, 530, 90, 32);
-        CreateButton(hwnd, IdMoveDownButton, L"S / Down", 125, 530, 90, 32);
-        CreateButton(hwnd, IdMoveRightButton, L"D / Right", 225, 530, 90, 32);
-
-        CreateButton(hwnd, IdRotateLeftButton, L"Rotate -15", 340, 490, 100, 32);
-        CreateButton(hwnd, IdRotateRightButton, L"Rotate +15", 450, 490, 100, 32);
-        CreateButton(hwnd, IdPickupButton, L"Pickup Selected", 340, 530, 210, 32);
-
-        CreateLabel(hwnd, L"Log", 580, 490, 100, 24);
-
-        g_logEdit = CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            L"EDIT",
-            L"",
-            WS_CHILD |
-            WS_VISIBLE |
-            WS_BORDER |
-            ES_MULTILINE |
-            ES_AUTOVSCROLL |
-            ES_READONLY |
-            WS_VSCROLL,
-            580,
-            515,
-            500,
-            170,
-            hwnd,
-            reinterpret_cast<HMENU>(static_cast<intptr_t>(IdLogEdit)),
-            GetModuleHandleW(nullptr),
-            nullptr);
-
-        ApplyFontToChildren(hwnd);
-
-        SetGameControlsEnabledDirect(false);
-
-        AppendLogDirect(L"Stalker Online Game Client started.");
-        AppendLogDirect(L"Login/Register ready. Game UI enabled after login.");
-    }
-
-    LRESULT CALLBACK WindowProc(
-        HWND hwnd,
-        UINT message,
-        WPARAM wParam,
-        LPARAM lParam)
-    {
-        switch (message)
+        case WM_DESTROY:
         {
-            case WM_CREATE:
-            {
-                g_mainWindow = hwnd;
-
-                g_client = std::make_unique<NetworkClient>(
-                    [](const std::wstring& text)
-                    {
-                        PostLog(text);
-                    },
-                    []()
-                    {
-                        PostRefreshGameUi();
-                    });
-
-                CreateUi(hwnd);
-                return 0;
-            }
-
-            case WM_COMMAND:
-            {
-                int controlId = LOWORD(wParam);
-
-                switch (controlId)
-                {
-                    case IdLoginButton:
-                        RunLogin();
-                        return 0;
-
-                    case IdRegisterButton:
-                        RunRegister();
-                        return 0;
-
-                    case IdDisconnectButton:
-                        RunDisconnect();
-                        return 0;
-
-                    case IdMoveUpButton:
-                        SendMove(0.0f, 1.0f);
-                        return 0;
-
-                    case IdMoveDownButton:
-                        SendMove(0.0f, -1.0f);
-                        return 0;
-
-                    case IdMoveLeftButton:
-                        SendMove(-1.0f, 0.0f);
-                        return 0;
-
-                    case IdMoveRightButton:
-                        SendMove(1.0f, 0.0f);
-                        return 0;
-
-                    case IdRotateLeftButton:
-                        RotatePlayer(-15.0f);
-                        return 0;
-
-                    case IdRotateRightButton:
-                        RotatePlayer(15.0f);
-                        return 0;
-
-                    case IdPickupButton:
-                        PickupSelectedWorldItem();
-                        return 0;
-
-                    default:
-                        break;
-                }
-
-                break;
-            }
-
-            case WM_KEYDOWN:
-            {
-                switch (wParam)
-                {
-                    case 'W':
-                        SendMove(0.0f, 1.0f);
-                        return 0;
-
-                    case 'S':
-                        SendMove(0.0f, -1.0f);
-                        return 0;
-
-                    case 'A':
-                        SendMove(-1.0f, 0.0f);
-                        return 0;
-
-                    case 'D':
-                        SendMove(1.0f, 0.0f);
-                        return 0;
-
-                    case 'Q':
-                        RotatePlayer(-15.0f);
-                        return 0;
-
-                    case 'E':
-                        RotatePlayer(15.0f);
-                        return 0;
-
-                    case 'F':
-                        PickupSelectedWorldItem();
-                        return 0;
-
-                    default:
-                        break;
-                }
-
-                break;
-            }
-
-            case WmAppendLog:
-            {
-                auto* text = reinterpret_cast<std::wstring*>(lParam);
-
-                if (text)
-                {
-                    AppendLogDirect(*text);
-                    delete text;
-                }
-
-                return 0;
-            }
-
-            case WmSetAuthControlsEnabled:
-            {
-                bool enabled = wParam != 0;
-                SetAuthControlsEnabledDirect(enabled);
-                return 0;
-            }
-
-            case WmRefreshGameUi:
-            {
-                RefreshGameUi();
-                return 0;
-            }
-
-            case WM_DESTROY:
-            {
-                if (g_client)
-                {
-                    g_client->Stop();
-                    g_client.reset();
-                }
-
-                PostQuitMessage(0);
-                return 0;
-            }
-
-            default:
-                break;
+            g_running.store(false);
+            PostQuitMessage(0);
+            return 0;
         }
 
-        return DefWindowProcW(hwnd, message, wParam, lParam);
+        default:
+            break;
     }
+
+    return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
 int WINAPI wWinMain(
     HINSTANCE hInstance,
     HINSTANCE,
     PWSTR,
-    int nCmdShow)
+    int nCmdShow
+)
 {
-    const wchar_t* className = L"StalkerOnlineGameClientWindow";
-
-    WNDCLASSW windowClass{};
+    WNDCLASSEXW windowClass{};
+    windowClass.cbSize = sizeof(WNDCLASSEXW);
+    windowClass.style = CS_CLASSDC;
     windowClass.lpfnWndProc = WindowProc;
+    windowClass.cbClsExtra = 0;
+    windowClass.cbWndExtra = 0;
     windowClass.hInstance = hInstance;
-    windowClass.lpszClassName = className;
+    windowClass.hIcon = nullptr;
     windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    windowClass.hbrBackground = nullptr;
+    windowClass.lpszMenuName = nullptr;
+    windowClass.lpszClassName = L"StalkerOnlineGameClientWindow";
+    windowClass.hIconSm = nullptr;
 
-    RegisterClassW(&windowClass);
+    RegisterClassExW(&windowClass);
 
-    HWND hwnd = CreateWindowExW(
-        0,
-        className,
+    HWND hwnd = CreateWindowW(
+        windowClass.lpszClassName,
         L"Stalker Online - Game Client",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
+        100,
+        100,
         WindowWidth,
         WindowHeight,
         nullptr,
         nullptr,
-        hInstance,
-        nullptr);
+        windowClass.hInstance,
+        nullptr
+    );
 
-    if (!hwnd)
-        return 0;
+    if (!CreateDeviceD3D(hwnd))
+    {
+        CleanupDeviceD3D();
+        UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
+        return 1;
+    }
 
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    StalkerOnline::UI::ApplyStalkerDarkStyle();
+
+    ImGui_ImplWin32_Init(hwnd);
+    ImGui_ImplDX11_Init(g_d3dDevice, g_d3dDeviceContext);
+
+    g_client = std::make_unique<NetworkClient>(
+        [](const std::wstring& text)
+        {
+            SetStatus(WideToUtf8(text));
+        },
+        []()
+        {
+        }
+    );
+
+    SetStatus("Ready. Server: " + std::string(DefaultServerHost) + ":" + std::to_string(DefaultServerPort));
+
     MSG message{};
 
-    while (GetMessageW(&message, nullptr, 0, 0))
+    while (g_running.load())
     {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
+        while (PeekMessageW(&message, nullptr, 0U, 0U, PM_REMOVE))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+
+            if (message.message == WM_QUIT)
+                g_running.store(false);
+        }
+
+        if (!g_running.load())
+            break;
+
+        UpdatePlayerStatsFromNetwork();
+        SyncLoginState();
+
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+
+        StalkerOnline::UI::DrawZoneBackground(static_cast<float>(ImGui::GetTime()));
+
+        bool loginPressed = false;
+        bool registerPressed = false;
+        bool exitPressed = false;
+
+        bool openInventoryPressed = false;
+        bool disconnectPressed = false;
+
+        if (!g_authenticated.load())
+        {
+            StalkerOnline::UI::DrawLoginRegisterScreen(
+                g_loginState,
+                loginPressed,
+                registerPressed,
+                exitPressed
+            );
+
+            if (loginPressed)
+                RunLogin();
+
+            if (registerPressed)
+                RunRegister();
+
+            if (exitPressed)
+                g_running.store(false);
+        }
+        else
+        {
+            HandleGameInput();
+
+            StalkerOnline::UI::DrawGameHudMock(
+                g_playerStats,
+                openInventoryPressed,
+                disconnectPressed
+            );
+
+            if (openInventoryPressed)
+                SetStatus("Inventory UI will be added next");
+
+            if (disconnectPressed)
+                RunDisconnect();
+        }
+
+        ImGui::Render();
+
+        const float clearColor[4] = { 0.015f, 0.017f, 0.014f, 1.0f };
+
+        g_d3dDeviceContext->OMSetRenderTargets(
+            1,
+            &g_mainRenderTargetView,
+            nullptr
+        );
+
+        g_d3dDeviceContext->ClearRenderTargetView(
+            g_mainRenderTargetView,
+            clearColor
+        );
+
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+        g_swapChain->Present(1, 0);
     }
+
+    if (g_client)
+    {
+        g_client->Stop();
+        g_client.reset();
+    }
+
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+
+    CleanupDeviceD3D();
+
+    DestroyWindow(hwnd);
+    UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
 
     return 0;
 }
