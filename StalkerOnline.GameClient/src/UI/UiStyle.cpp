@@ -385,7 +385,7 @@ namespace StalkerOnline::UI
 
         ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-        const ImVec2 panelSize(520.0f, state.RegisterMode ? 585.0f : 525.0f);
+        const ImVec2 panelSize(560.0f, state.RegisterMode ? 665.0f : 610.0f);
         const ImVec2 panelPos(
             viewport->Pos.x + viewport->Size.x * 0.5f - panelSize.x * 0.5f,
             viewport->Pos.y + viewport->Size.y * 0.5f - panelSize.y * 0.5f
@@ -405,20 +405,32 @@ namespace StalkerOnline::UI
         const ImVec2 logoSize = ImGui::CalcTextSize(logo);
         const ImVec2 logoPos(
             windowPos.x + windowSize.x * 0.5f - logoSize.x * 0.5f,
-            windowPos.y + 62.0f
+            windowPos.y + 60.0f
         );
 
         DrawTextShadow(drawList, logoPos, U32(226, 194, 105, 255), logo);
 
-        ImGui::SetCursorPosY(98.0f);
+        ImGui::SetCursorPosY(92.0f);
 
         ImGui::TextColored(ColorFromBytes(145, 137, 108), "SERVER STATUS");
         ImGui::SameLine();
 
-        if (state.IsConnected)
+        if (state.IsCheckingServer)
+        {
+            ImGui::TextColored(ColorFromBytes(210, 175, 70), "CHECKING...");
+        }
+        else if (!state.ServerStatusKnown)
+        {
+            ImGui::TextColored(ColorFromBytes(150, 145, 125), "UNKNOWN");
+        }
+        else if (state.ServerOnline)
+        {
             ImGui::TextColored(ColorFromBytes(105, 181, 96), "ONLINE");
+        }
         else
+        {
             ImGui::TextColored(ColorFromBytes(187, 79, 61), "OFFLINE");
+        }
 
         ImGui::TextColored(ColorFromBytes(139, 133, 112), "%s", state.StatusText);
 
@@ -431,10 +443,20 @@ namespace StalkerOnline::UI
         ImGui::Dummy(ImVec2(1.0f, 18.0f));
 
         ImGui::TextColored(ColorFromBytes(197, 179, 126), "SERVER IP");
-        ImGui::InputText("##ServerHostInput", state.ServerHost, sizeof(state.ServerHost));
 
-        ImGui::TextColored(ColorFromBytes(197, 179, 126), "SERVER PORT");
-        ImGui::InputInt("##ServerPortInput", &state.ServerPort, 1, 100);
+        ImGui::PushItemWidth(340.0f);
+        ImGui::InputText("##ServerHostInput", state.ServerHost, sizeof(state.ServerHost));
+        ImGui::PopItemWidth();
+
+        ImGui::SameLine();
+
+        ImGui::TextColored(ColorFromBytes(197, 179, 126), "PORT");
+
+        ImGui::SameLine();
+
+        ImGui::PushItemWidth(90.0f);
+        ImGui::InputInt("##ServerPortInput", &state.ServerPort, 0, 0);
+        ImGui::PopItemWidth();
 
         if (state.ServerPort < 1)
             state.ServerPort = 1;
@@ -442,7 +464,7 @@ namespace StalkerOnline::UI
         if (state.ServerPort > 65535)
             state.ServerPort = 65535;
 
-        ImGui::Dummy(ImVec2(1.0f, 8.0f));
+        ImGui::Dummy(ImVec2(1.0f, 10.0f));
 
         ImGui::TextColored(ColorFromBytes(197, 179, 126), "LOGIN");
         ImGui::InputText("##LoginInput", state.Login, sizeof(state.Login));
@@ -461,30 +483,32 @@ namespace StalkerOnline::UI
             ImGuiInputTextFlags_Password
         );
 
+        ImGui::Dummy(ImVec2(1.0f, 6.0f));
+
         ImGui::Checkbox("Remember login", &state.RememberLogin);
 
-        ImGui::Dummy(ImVec2(1.0f, 8.0f));
+        ImGui::Dummy(ImVec2(1.0f, 12.0f));
 
         const float buttonWidth = windowSize.x - 32.0f;
 
         if (!state.RegisterMode)
         {
-            if (StalkerButton("LOGIN", ImVec2(buttonWidth, 38.0f), false, state.IsBusy))
+            if (StalkerButton("LOGIN", ImVec2(buttonWidth, 38.0f), false, state.IsBusy || !state.ServerOnline))
                 outLoginPressed = true;
 
-            if (StalkerButton("CREATE NEW ACCOUNT", ImVec2(buttonWidth, 34.0f), false, state.IsBusy))
+            if (StalkerButton("CREATE NEW ACCOUNT", ImVec2(buttonWidth, 34.0f), false, state.IsBusy || !state.ServerOnline))
                 state.RegisterMode = true;
         }
         else
         {
-            if (StalkerButton("REGISTER ACCOUNT", ImVec2(buttonWidth, 38.0f), false, state.IsBusy))
+            if (StalkerButton("REGISTER ACCOUNT", ImVec2(buttonWidth, 38.0f), false, state.IsBusy || !state.ServerOnline))
                 outRegisterPressed = true;
 
             if (StalkerButton("BACK TO LOGIN", ImVec2(buttonWidth, 34.0f), false, state.IsBusy))
                 state.RegisterMode = false;
         }
 
-        ImGui::Dummy(ImVec2(1.0f, 6.0f));
+        ImGui::Dummy(ImVec2(1.0f, 8.0f));
 
         if (StalkerButton("EXIT CLIENT", ImVec2(buttonWidth, 34.0f), true, state.IsBusy))
             outExitPressed = true;

@@ -21,8 +21,13 @@ namespace StalkerOnline::UI
         char Password[64] = {};
 
         char StatusText[256] = "Disconnected";
+
         bool IsConnected = false;
         bool IsBusy = false;
+
+        bool ServerStatusKnown = false;
+        bool ServerOnline = false;
+        bool IsCheckingServer = false;
     };
 
     struct PlayerDebugStats

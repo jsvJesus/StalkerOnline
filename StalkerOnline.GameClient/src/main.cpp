@@ -16,6 +16,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <chrono>
+#include <fstream>
+#include <sstream>
+#include <ws2tcpip.h>
 
 namespace
 {
@@ -39,6 +43,16 @@ namespace
     std::atomic_bool g_authenticated = false;
     std::atomic_bool g_busy = false;
     std::atomic_bool g_connected = false;
+
+    std::atomic_bool g_serverStatusKnown = false;
+    std::atomic_bool g_serverOnline = false;
+    std::atomic_bool g_serverStatusChecking = false;
+
+    std::chrono::steady_clock::time_point g_nextServerStatusCheckTime{};
+    std::string g_lastCheckedServerHost;
+    uint16_t g_lastCheckedServerPort = 0;
+
+    constexpr const char* RememberLoginFileName = "client_remember_login.ini";
 
     std::mutex g_statusMutex;
     std::string g_statusText = "Disconnected";
@@ -87,6 +101,267 @@ namespace
         g_statusText = text;
     }
 
+    void CopyToBuffer(char* destination, size_t destinationSize, const std::string& value)
+    {
+        if (!destination || destinationSize == 0)
+            return;
+
+        std::snprintf(destination, destinationSize, "%s", value.c_str());
+    }
+
+    uint16_t GetServerPortFromLoginState()
+    {
+        if (g_loginState.ServerPort < 1)
+            return 7777;
+
+        if (g_loginState.ServerPort > 65535)
+            return 7777;
+
+        return static_cast<uint16_t>(g_loginState.ServerPort);
+    }
+
+    void LoadRememberLogin()
+    {
+        std::ifstream file(RememberLoginFileName);
+
+        if (!file.is_open())
+            return;
+
+        std::string line;
+        bool remember = false;
+        std::string host;
+        std::string login;
+        int port = 7777;
+
+        while (std::getline(file, line))
+        {
+            const size_t separator = line.find('=');
+
+            if (separator == std::string::npos)
+                continue;
+
+            const std::string key = line.substr(0, separator);
+            const std::string value = line.substr(separator + 1);
+
+            if (key == "remember")
+            {
+                remember = value == "1";
+            }
+            else if (key == "host")
+            {
+                host = value;
+            }
+            else if (key == "port")
+            {
+                try
+                {
+                    port = std::stoi(value);
+                }
+                catch (...)
+                {
+                    port = 7777;
+                }
+            }
+            else if (key == "login")
+            {
+                login = value;
+            }
+        }
+
+        if (!remember)
+            return;
+
+        g_loginState.RememberLogin = true;
+
+        if (!host.empty())
+            CopyToBuffer(g_loginState.ServerHost, sizeof(g_loginState.ServerHost), host);
+
+        if (port >= 1 && port <= 65535)
+            g_loginState.ServerPort = port;
+
+        if (!login.empty())
+            CopyToBuffer(g_loginState.Login, sizeof(g_loginState.Login), login);
+    }
+
+    void SaveRememberLogin(
+        const std::string& host,
+        uint16_t port,
+        const std::string& login,
+        bool remember
+    )
+    {
+        if (!remember)
+        {
+            DeleteFileA(RememberLoginFileName);
+            return;
+        }
+
+        std::ofstream file(RememberLoginFileName, std::ios::trunc);
+
+        if (!file.is_open())
+            return;
+
+        file << "remember=1\n";
+        file << "host=" << host << "\n";
+        file << "port=" << port << "\n";
+        file << "login=" << login << "\n";
+    }
+
+    bool CheckTcpServerOnline(
+        const std::string& host,
+        uint16_t port,
+        int timeoutMs
+    )
+    {
+        if (host.empty())
+            return false;
+
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+
+        addrinfo* result = nullptr;
+        const std::string portText = std::to_string(port);
+
+        const int getAddrResult = getaddrinfo(
+            host.c_str(),
+            portText.c_str(),
+            &hints,
+            &result
+        );
+
+        if (getAddrResult != 0 || result == nullptr)
+            return false;
+
+        bool online = false;
+
+        for (addrinfo* ptr = result; ptr != nullptr; ptr = ptr->ai_next)
+        {
+            SOCKET testSocket = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
+
+            if (testSocket == INVALID_SOCKET)
+                continue;
+
+            u_long nonBlocking = 1;
+            ioctlsocket(testSocket, FIONBIO, &nonBlocking);
+
+            const int connectResult = connect(
+                testSocket,
+                ptr->ai_addr,
+                static_cast<int>(ptr->ai_addrlen)
+            );
+
+            if (connectResult == 0)
+            {
+                online = true;
+                closesocket(testSocket);
+                break;
+            }
+
+            const int error = WSAGetLastError();
+
+            if (error == WSAEWOULDBLOCK || error == WSAEINPROGRESS || error == WSAEINVAL)
+            {
+                fd_set writeSet;
+                FD_ZERO(&writeSet);
+                FD_SET(testSocket, &writeSet);
+
+                fd_set errorSet;
+                FD_ZERO(&errorSet);
+                FD_SET(testSocket, &errorSet);
+
+                timeval timeout{};
+                timeout.tv_sec = timeoutMs / 1000;
+                timeout.tv_usec = (timeoutMs % 1000) * 1000;
+
+                const int selectResult = select(
+                    0,
+                    nullptr,
+                    &writeSet,
+                    &errorSet,
+                    &timeout
+                );
+
+                if (selectResult > 0 && FD_ISSET(testSocket, &writeSet))
+                {
+                    int socketError = 0;
+                    int socketErrorSize = sizeof(socketError);
+
+                    getsockopt(
+                        testSocket,
+                        SOL_SOCKET,
+                        SO_ERROR,
+                        reinterpret_cast<char*>(&socketError),
+                        &socketErrorSize
+                    );
+
+                    online = socketError == 0;
+                }
+            }
+
+            closesocket(testSocket);
+
+            if (online)
+                break;
+        }
+
+        freeaddrinfo(result);
+
+        return online;
+    }
+
+    void MaybeStartServerStatusCheck()
+    {
+        if (g_authenticated.load())
+            return;
+
+        if (g_serverStatusChecking.load())
+            return;
+
+        const std::string host = g_loginState.ServerHost;
+        const uint16_t port = GetServerPortFromLoginState();
+
+        if (host.empty())
+        {
+            g_serverStatusKnown.store(true);
+            g_serverOnline.store(false);
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+
+        const bool serverChanged =
+            host != g_lastCheckedServerHost ||
+            port != g_lastCheckedServerPort;
+
+        if (!serverChanged && now < g_nextServerStatusCheckTime)
+            return;
+
+        g_lastCheckedServerHost = host;
+        g_lastCheckedServerPort = port;
+        g_nextServerStatusCheckTime = now + std::chrono::seconds(5);
+
+        g_serverStatusChecking.store(true);
+
+        std::thread([host, port]()
+        {
+            const bool online = CheckTcpServerOnline(host, port, 800);
+
+            g_serverOnline.store(online);
+            g_serverStatusKnown.store(true);
+            g_serverStatusChecking.store(false);
+
+            if (!g_authenticated.load())
+            {
+                if (online)
+                    SetStatus("Server online: " + host + ":" + std::to_string(port));
+                else
+                    SetStatus("Server offline: " + host + ":" + std::to_string(port));
+            }
+        }).detach();
+    }
+
     uint16_t GetServerPortFromLoginState()
     {
         if (g_loginState.ServerPort < 1)
@@ -118,6 +393,10 @@ namespace
 
         g_loginState.IsConnected = g_connected.load();
         g_loginState.IsBusy = g_busy.load();
+
+        g_loginState.ServerStatusKnown = g_serverStatusKnown.load();
+        g_loginState.ServerOnline = g_serverOnline.load();
+        g_loginState.IsCheckingServer = g_serverStatusChecking.load();
     }
 
     void CreateRenderTarget()
@@ -337,7 +616,7 @@ namespace
         g_busy.store(true);
         SetStatus("Connecting...");
 
-        std::thread([host, port, login, password]()
+        std::thread([host, port, login, password, rememberLogin]()
         {
             if (!g_client)
             {
@@ -351,13 +630,17 @@ namespace
                 if (!g_client->Connect(host, port))
                 {
                     g_connected.store(false);
+                    g_serverStatusKnown.store(true);
+                    g_serverOnline.store(false);
                     g_busy.store(false);
-                    SetStatus("Connect failed");
+                    SetStatus("Connect failed. Server offline: " + host + ":" + std::to_string(port));
                     return;
                 }
             }
 
             g_connected.store(true);
+            g_serverStatusKnown.store(true);
+            g_serverOnline.store(true);
             SetStatus("Sending login request...");
 
             LoginResult result = g_client->Login(login, password);
@@ -378,6 +661,7 @@ namespace
             SetStatus("Login success: " + result.Message);
 
             g_client->StartReceiveLoop();
+            SaveRememberLogin(host, port, login, rememberLogin);
         }).detach();
     }
 
@@ -392,6 +676,13 @@ namespace
         const std::string login = g_loginState.Login;
         const std::string email = g_loginState.Email;
         const std::string password = g_loginState.Password;
+        const bool rememberLogin = g_loginState.RememberLogin;
+
+        if (host.empty())
+        {
+            SetStatus("Server IP is empty");
+            return;
+        }
 
         if (host.empty())
         {
@@ -420,7 +711,7 @@ namespace
         g_busy.store(true);
         SetStatus("Connecting...");
 
-        std::thread([host, port, login, email, password]()
+        std::thread([host, port, login, email, password, rememberLogin]()
         {
             if (!g_client)
             {
@@ -434,13 +725,17 @@ namespace
                 if (!g_client->Connect(host, port))
                 {
                     g_connected.store(false);
+                    g_serverStatusKnown.store(true);
+                    g_serverOnline.store(false);
                     g_busy.store(false);
-                    SetStatus("Connect failed");
+                    SetStatus("Connect failed. Server offline: " + host + ":" + std::to_string(port));
                     return;
                 }
             }
 
             g_connected.store(true);
+            g_serverStatusKnown.store(true);
+            g_serverOnline.store(true);
             SetStatus("Sending register request...");
 
             RegisterResult result = g_client->Register(login, email, password);
@@ -456,6 +751,7 @@ namespace
             }
 
             SetStatus("Register success. Account created: " + result.Login);
+            SaveRememberLogin(host, port, login, rememberLogin);
         }).detach();
     }
 
@@ -699,6 +995,7 @@ int WINAPI wWinMain(
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_d3dDevice, g_d3dDeviceContext);
 
+    LoadRememberLogin();
     g_client = std::make_unique<NetworkClient>(
         [](const std::wstring& text)
         {
@@ -732,6 +1029,7 @@ int WINAPI wWinMain(
         if (!g_running.load())
             break;
 
+        MaybeStartServerStatusCheck();
         UpdateGameScreenStateFromNetwork();
         SyncUiStatus();
 
