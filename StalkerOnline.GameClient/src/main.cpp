@@ -1,5 +1,6 @@
 #include "NetworkClient.h"
 #include "UI/UiStyle.h"
+#include "Engine/Renderer/Dx11Renderer.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_win32.h>
@@ -29,10 +30,7 @@ namespace
     constexpr const char* DefaultServerHost = "26.163.92.76";
     constexpr uint16_t DefaultServerPort = 7777;
 
-    ID3D11Device* g_d3dDevice = nullptr;
-    ID3D11DeviceContext* g_d3dDeviceContext = nullptr;
-    IDXGISwapChain* g_swapChain = nullptr;
-    ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
+    std::unique_ptr<StalkerOnline::Engine::Dx11Renderer> g_renderer;
 
     std::unique_ptr<NetworkClient> g_client;
 
@@ -387,107 +385,6 @@ namespace
         g_loginState.ServerStatusKnown = g_serverStatusKnown.load();
         g_loginState.ServerOnline = g_serverOnline.load();
         g_loginState.IsCheckingServer = g_serverStatusChecking.load();
-    }
-
-    void CreateRenderTarget()
-    {
-        ID3D11Texture2D* backBuffer = nullptr;
-
-        g_swapChain->GetBuffer(
-            0,
-            IID_PPV_ARGS(&backBuffer)
-        );
-
-        if (backBuffer)
-        {
-            g_d3dDevice->CreateRenderTargetView(
-                backBuffer,
-                nullptr,
-                &g_mainRenderTargetView
-            );
-
-            backBuffer->Release();
-        }
-    }
-
-    void CleanupRenderTarget()
-    {
-        if (g_mainRenderTargetView)
-        {
-            g_mainRenderTargetView->Release();
-            g_mainRenderTargetView = nullptr;
-        }
-    }
-
-    bool CreateDeviceD3D(HWND hwnd)
-    {
-        DXGI_SWAP_CHAIN_DESC swapChainDesc{};
-        swapChainDesc.BufferCount = 2;
-        swapChainDesc.BufferDesc.Width = 0;
-        swapChainDesc.BufferDesc.Height = 0;
-        swapChainDesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        swapChainDesc.BufferDesc.RefreshRate.Numerator = 60;
-        swapChainDesc.BufferDesc.RefreshRate.Denominator = 1;
-        swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        swapChainDesc.OutputWindow = hwnd;
-        swapChainDesc.SampleDesc.Count = 1;
-        swapChainDesc.SampleDesc.Quality = 0;
-        swapChainDesc.Windowed = TRUE;
-        swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-        UINT createDeviceFlags = 0;
-
-        D3D_FEATURE_LEVEL featureLevel;
-        const D3D_FEATURE_LEVEL featureLevelArray[2] =
-        {
-            D3D_FEATURE_LEVEL_11_0,
-            D3D_FEATURE_LEVEL_10_0
-        };
-
-        HRESULT result = D3D11CreateDeviceAndSwapChain(
-            nullptr,
-            D3D_DRIVER_TYPE_HARDWARE,
-            nullptr,
-            createDeviceFlags,
-            featureLevelArray,
-            2,
-            D3D11_SDK_VERSION,
-            &swapChainDesc,
-            &g_swapChain,
-            &g_d3dDevice,
-            &featureLevel,
-            &g_d3dDeviceContext
-        );
-
-        if (FAILED(result))
-            return false;
-
-        CreateRenderTarget();
-        return true;
-    }
-
-    void CleanupDeviceD3D()
-    {
-        CleanupRenderTarget();
-
-        if (g_swapChain)
-        {
-            g_swapChain->Release();
-            g_swapChain = nullptr;
-        }
-
-        if (g_d3dDeviceContext)
-        {
-            g_d3dDeviceContext->Release();
-            g_d3dDeviceContext = nullptr;
-        }
-
-        if (g_d3dDevice)
-        {
-            g_d3dDevice->Release();
-            g_d3dDevice = nullptr;
-        }
     }
 
     void UpdateGameScreenStateFromNetwork()
@@ -885,24 +782,17 @@ LRESULT WINAPI WindowProc(
     switch (message)
     {
         case WM_SIZE:
-        {
-            if (g_d3dDevice != nullptr && wParam != SIZE_MINIMIZED)
-            {
-                CleanupRenderTarget();
+		{
+    		if (g_renderer && wParam != SIZE_MINIMIZED)
+    		{
+       		 	const std::uint32_t width = static_cast<std::uint32_t>(LOWORD(lParam));
+        		const std::uint32_t height = static_cast<std::uint32_t>(HIWORD(lParam));
 
-                g_swapChain->ResizeBuffers(
-                    0,
-                    static_cast<UINT>(LOWORD(lParam)),
-                    static_cast<UINT>(HIWORD(lParam)),
-                    DXGI_FORMAT_UNKNOWN,
-                    0
-                );
+        		g_renderer->Resize(width, height);
+    		}
 
-                CreateRenderTarget();
-            }
-
-            return 0;
-        }
+    		return 0;
+		}
 
         case WM_SYSCOMMAND:
         {
@@ -963,12 +853,14 @@ int WINAPI wWinMain(
         nullptr
     );
 
-    if (!CreateDeviceD3D(hwnd))
-    {
-        CleanupDeviceD3D();
-        UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
-        return 1;
-    }
+    g_renderer = std::make_unique<StalkerOnline::Engine::Dx11Renderer>();
+
+	if (!g_renderer->Initialize(hwnd))
+	{
+    	g_renderer.reset();
+    	UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
+    	return 1;
+	}
 
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
@@ -982,7 +874,10 @@ int WINAPI wWinMain(
     StalkerOnline::UI::ApplyStalkerDarkStyle();
 
     ImGui_ImplWin32_Init(hwnd);
-    ImGui_ImplDX11_Init(g_d3dDevice, g_d3dDeviceContext);
+    ImGui_ImplDX11_Init(
+    	g_renderer->GetDevice(),
+    	g_renderer->GetDeviceContext()
+	);
 
     LoadRememberLogin();
     g_client = std::make_unique<NetworkClient>(
@@ -1068,20 +963,11 @@ int WINAPI wWinMain(
 
         const float clearColor[4] = { 0.015f, 0.017f, 0.014f, 1.0f };
 
-        g_d3dDeviceContext->OMSetRenderTargets(
-            1,
-            &g_mainRenderTargetView,
-            nullptr
-        );
+		g_renderer->BeginFrame(clearColor);
 
-        g_d3dDeviceContext->ClearRenderTargetView(
-            g_mainRenderTargetView,
-            clearColor
-        );
+		ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-
-        g_swapChain->Present(1, 0);
+		g_renderer->EndFrame(true);
     }
 
     if (g_client)
@@ -1094,7 +980,11 @@ int WINAPI wWinMain(
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 
-    CleanupDeviceD3D();
+    if (g_renderer)
+	{
+    	g_renderer->Shutdown();
+    	g_renderer.reset();
+	}
 
     DestroyWindow(hwnd);
     UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);

@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.17)
 
 project(StalkerOnlineGameClient LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
 
 add_executable(StalkerOnline.GameClient WIN32
@@ -15,6 +19,9 @@ add_executable(StalkerOnline.GameClient WIN32
     src/UI/UiStyle.h
     src/UI/UiStyle.cpp
 
+    src/Engine/Renderer/Dx11Renderer.h
+    src/Engine/Renderer/Dx11Renderer.cpp
+
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
@@ -23,8 +30,6 @@ add_executable(StalkerOnline.GameClient WIN32
     ${IMGUI_DIR}/backends/imgui_impl_win32.cpp
     ${IMGUI_DIR}/backends/imgui_impl_dx11.cpp
 )
-
-target_compile_features(StalkerOnline.GameClient PRIVATE cxx_std_20)
 
 target_include_directories(StalkerOnline.GameClient PRIVATE
     src
@@ -46,6 +51,8 @@ target_link_libraries(StalkerOnline.GameClient PRIVATE
     dxgi
     d3dcompiler
 )
+
+target_compile_features(StalkerOnline.GameClient PRIVATE cxx_std_20)
 
 if (MSVC)
     target_compile_options(StalkerOnline.GameClient PRIVATE /W4 /permissive-)
