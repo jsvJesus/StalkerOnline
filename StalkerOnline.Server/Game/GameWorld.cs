@@ -401,6 +401,33 @@ public sealed class GameWorld
             Message = "Item picked up."
         };
     }
+    
+    public InventoryAddResult? AddItemToPlayer(
+        int sessionId,
+        string itemTemplateId,
+        string displayName,
+        int quantity,
+        int maxStack,
+        float weightPerItem)
+    {
+        if (!_playersBySessionId.TryGetValue(sessionId, out WorldPlayer? player))
+            return null;
+
+        return player.Inventory.AddItem(
+            itemTemplateId,
+            displayName,
+            quantity,
+            maxStack,
+            weightPerItem);
+    }
+
+    public InventorySnapshot? CreateInventorySnapshot(int sessionId)
+    {
+        if (!_playersBySessionId.TryGetValue(sessionId, out WorldPlayer? player))
+            return null;
+
+        return player.CreateInventorySnapshot();
+    }
 
     public void Clear()
     {

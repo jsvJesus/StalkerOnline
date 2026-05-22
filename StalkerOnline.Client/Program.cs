@@ -613,6 +613,27 @@ static async Task ReceiveLoopAsync(
                     break;
                 }
                 
+                case PacketType.InventorySnapshot:
+                {
+                    PacketReader reader = new(packet.Payload);
+                    InventorySnapshot snapshot = InventorySerializer.ReadSnapshot(reader);
+
+                    Console.WriteLine("=========== INVENTORY ===========");
+                    Console.WriteLine($"CharacterId: {snapshot.CharacterId}");
+                    Console.WriteLine($"Capacity:    {snapshot.Items.Count}/{snapshot.Capacity}");
+                    Console.WriteLine($"Weight:      {snapshot.TotalWeight:0.00}");
+                    Console.WriteLine("---------------------------------");
+
+                    foreach (InventoryItem item in snapshot.Items)
+                    {
+                        Console.WriteLine(
+                            $"Slot {item.SlotIndex}: {item.DisplayName} [{item.ItemTemplateId}] x{item.Quantity}/{item.MaxStack}, Weight={item.TotalWeight:0.00}");
+                    }
+
+                    Console.WriteLine("=================================");
+                    break;
+                }
+                
                 case PacketType.WorldItemSpawn:
                 {
                     PacketReader reader = new(packet.Payload);

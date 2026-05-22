@@ -250,6 +250,7 @@ public sealed class ClientSession
         await SendServerMessageAsync($"Welcome to Stalker Online, {Login}.");
 
         await SendPlayerStateSnapshotAsync();
+        await SendInventorySnapshotAsync();
         await _onPlayerJoinedWorld(this);
     }
     
@@ -415,6 +416,26 @@ public sealed class ClientSession
         await SendPacketAsync(PacketType.PlayerStateSnapshot, writer.ToArray());
 
         Console.WriteLine($"[PLAYER STATE SENT] SessionId={SessionId}, CharacterId={PlayerConnection.State.CharacterId}");
+    }
+    
+    private async Task SendInventorySnapshotAsync()
+    {
+        if (PlayerConnection == null)
+            return;
+
+        InventorySnapshot? snapshot = _gameWorld.CreateInventorySnapshot(SessionId);
+
+        if (snapshot == null)
+            return;
+
+        PacketWriter writer = new();
+
+        InventorySerializer.WriteSnapshot(writer, snapshot);
+
+        await SendPacketAsync(PacketType.InventorySnapshot, writer.ToArray());
+
+        Console.WriteLine(
+            $"[INVENTORY SNAPSHOT SENT] SessionId={SessionId}, CharacterId={snapshot.CharacterId}, Items={snapshot.Items.Count}, Weight={snapshot.TotalWeight:0.00}");
     }
     
     private async Task SendPickupItemResponseAsync(PickupItemResponse response)
