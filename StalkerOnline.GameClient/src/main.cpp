@@ -53,6 +53,7 @@ namespace
     uint16_t g_lastCheckedServerPort = 0;
 
     constexpr const char* RememberLoginFileName = "client_remember_login.ini";
+    uint16_t GetServerPortFromLoginState();
 
     std::mutex g_statusMutex;
     std::string g_statusText = "Disconnected";
@@ -107,17 +108,6 @@ namespace
             return;
 
         std::snprintf(destination, destinationSize, "%s", value.c_str());
-    }
-
-    uint16_t GetServerPortFromLoginState()
-    {
-        if (g_loginState.ServerPort < 1)
-            return 7777;
-
-        if (g_loginState.ServerPort > 65535)
-            return 7777;
-
-        return static_cast<uint16_t>(g_loginState.ServerPort);
     }
 
     void LoadRememberLogin()
@@ -594,6 +584,7 @@ namespace
 
         const std::string login = g_loginState.Login;
         const std::string password = g_loginState.Password;
+        const bool rememberLogin = g_loginState.RememberLogin;
 
         if (host.empty())
         {
@@ -641,6 +632,7 @@ namespace
             g_connected.store(true);
             g_serverStatusKnown.store(true);
             g_serverOnline.store(true);
+
             SetStatus("Sending login request...");
 
             LoginResult result = g_client->Login(login, password);
@@ -660,15 +652,16 @@ namespace
 
             SetStatus("Login success: " + result.Message);
 
-            g_client->StartReceiveLoop();
             SaveRememberLogin(host, port, login, rememberLogin);
+
+            g_client->StartReceiveLoop();
         }).detach();
     }
 
     void RunRegister()
     {
         if (g_busy.load())
-            return;
+        return;
 
         const std::string host = g_loginState.ServerHost;
         const uint16_t port = GetServerPortFromLoginState();
@@ -677,12 +670,6 @@ namespace
         const std::string email = g_loginState.Email;
         const std::string password = g_loginState.Password;
         const bool rememberLogin = g_loginState.RememberLogin;
-
-        if (host.empty())
-        {
-            SetStatus("Server IP is empty");
-            return;
-        }
 
         if (host.empty())
         {
@@ -736,6 +723,7 @@ namespace
             g_connected.store(true);
             g_serverStatusKnown.store(true);
             g_serverOnline.store(true);
+
             SetStatus("Sending register request...");
 
             RegisterResult result = g_client->Register(login, email, password);
@@ -750,8 +738,9 @@ namespace
                 return;
             }
 
-            SetStatus("Register success. Account created: " + result.Login);
             SaveRememberLogin(host, port, login, rememberLogin);
+
+            SetStatus("Register success. Account created: " + result.Login);
         }).detach();
     }
 
