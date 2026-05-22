@@ -41,19 +41,19 @@ public sealed class GameWorld
         _playersBySessionId.AddOrUpdate(
             connection.SessionId,
             player,
-            static (_, oldPlayer) =>
+            (existingSessionId, oldPlayer) =>
             {
-                return oldPlayer;
+                _objectsByWorldObjectId.TryRemove(
+                    oldPlayer.WorldObjectId,
+                    out WorldObject? removedObject);
+
+                return player;
             });
 
-        if (_playersBySessionId.TryGetValue(connection.SessionId, out WorldPlayer? existingPlayer))
-        {
-            if (existingPlayer.WorldObjectId != player.WorldObjectId)
-                _objectsByWorldObjectId.TryRemove(existingPlayer.WorldObjectId, out WorldObject? removedOldObject);
-        }
-
-        _playersBySessionId[connection.SessionId] = player;
-        _objectsByWorldObjectId[player.WorldObjectId] = player;
+        _objectsByWorldObjectId.AddOrUpdate(
+            player.WorldObjectId,
+            player,
+            (existingWorldObjectId, oldObject) => player);
 
         Console.WriteLine(
             $"[WORLD PLAYER ADDED] SessionId={player.SessionId}, WorldObjectId={player.WorldObjectId}, CharacterId={player.CharacterId}, Nickname={player.Nickname}, Players={PlayerCount}, Objects={WorldObjectCount}");
