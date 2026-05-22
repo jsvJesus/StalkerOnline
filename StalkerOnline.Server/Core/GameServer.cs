@@ -26,6 +26,7 @@ public sealed class GameServer
     private readonly CharacterService _characterService;
 
     private readonly GameWorld _gameWorld;
+    private readonly InterestManager _interestManager = new();
 
     private readonly ConcurrentDictionary<int, ClientSession> _sessions = new();
 
@@ -201,85 +202,23 @@ public sealed class GameServer
         if (sourcePlayer == null)
             return;
 
-        List<WorldPlayer> nearbyPlayers = _gameWorld.GetNearbyPlayers(
-            sourceSession.SessionId,
-            _serverConfig.SpawnBroadcastRadius);
+        _interestManager.RegisterPlayer(sourceSession.SessionId);
 
-        await SendExistingPlayersToNewPlayerAsync(sourceSession, nearbyPlayers);
-        await BroadcastPlayerSpawnAsync(sourceSession, sourcePlayer, nearbyPlayers);
-    }
+        await UpdatePlayerInterestAsync(sourceSession);
 
-    private static async Task SendExistingPlayersToNewPlayerAsync(
-        ClientSession newSession,
-        List<WorldPlayer> existingPlayers)
-    {
-        int sent = 0;
-
-        foreach (WorldPlayer existingPlayer in existingPlayers)
-        {
-            PlayerSpawnInfo spawnInfo = existingPlayer.CreateSpawnInfo();
-
-            PacketWriter writer = new();
-            PlayerWorldSerializer.WriteSpawnInfo(writer, spawnInfo);
-
-            await newSession.SendPacketAsync(PacketType.PlayerSpawn, writer.ToArray());
-
-            sent++;
-        }
-
-        if (sent > 0)
-        {
-            Console.WriteLine(
-                $"[SPAWN LIST SENT] SessionId={newSession.SessionId}, Players={sent}");
-        }
-    }
-
-    private async Task BroadcastPlayerSpawnAsync(
-        ClientSession sourceSession,
-        WorldPlayer sourcePlayer,
-        List<WorldPlayer> nearbyPlayers)
-    {
-        if (nearbyPlayers.Count == 0)
-            return;
-
-        PlayerSpawnInfo spawnInfo = sourcePlayer.CreateSpawnInfo();
-
-        PacketWriter writer = new();
-        PlayerWorldSerializer.WriteSpawnInfo(writer, spawnInfo);
-
-        byte[] payload = writer.ToArray();
-
-        List<Task> sendTasks = new();
-
-        foreach (WorldPlayer nearbyPlayer in nearbyPlayers)
-        {
-            if (!_sessions.TryGetValue(nearbyPlayer.SessionId, out ClientSession? targetSession))
-                continue;
-
-            if (!targetSession.IsAuthorized || targetSession.PlayerConnection == null)
-                continue;
-
-            sendTasks.Add(targetSession.SendPacketAsync(PacketType.PlayerSpawn, payload));
-        }
-
-        if (sendTasks.Count > 0)
-        {
-            await Task.WhenAll(sendTasks);
-
-            Console.WriteLine(
-                $"[PLAYER SPAWN BROADCAST] CharacterId={spawnInfo.CharacterId}, Nickname={spawnInfo.Nickname}, Targets={sendTasks.Count}");
-        }
+        Console.WriteLine(
+            $"[INTEREST JOIN] SessionId={sourceSession.SessionId}, CharacterId={sourcePlayer.CharacterId}");
     }
 
     private async Task BroadcastPlayerPositionAsync(
         ClientSession sourceSession,
         PlayerPositionUpdate positionUpdate)
     {
-        List<int> nearbySessionIds = _gameWorld.GetNearbyPlayerSessionIds(
-            sourceSession.SessionId,
-            _serverConfig.PositionBroadcastRadius);
+        await UpdatePlayerInterestAsync(sourceSession);
 
-        if (nearbySessionIds.Count == 0)
+        List<int> observerSessionIds = _interestManager.GetObserversSeeingPlayer(sourceSession.SessionId);
+
+        if (observerSessionIds.Count == 0)
             return;
 
         PacketWriter writer = new();
@@ -289,15 +228,15 @@ public sealed class GameServer
 
         List<Task> sendTasks = new();
 
-        foreach (int targetSessionId in nearbySessionIds)
+        foreach (int observerSessionId in observerSessionIds)
         {
-            if (!_sessions.TryGetValue(targetSessionId, out ClientSession? targetSession))
+            if (!_sessions.TryGetValue(observerSessionId, out ClientSession? observerSession))
                 continue;
 
-            if (!targetSession.IsAuthorized || targetSession.PlayerConnection == null)
+            if (!observerSession.IsAuthorized || observerSession.PlayerConnection == null)
                 continue;
 
-            sendTasks.Add(targetSession.SendPacketAsync(PacketType.PlayerPositionBroadcast, payload));
+            sendTasks.Add(observerSession.SendPacketAsync(PacketType.PlayerPositionBroadcast, payload));
         }
 
         if (sendTasks.Count > 0)
@@ -309,39 +248,103 @@ public sealed class GameServer
         }
     }
 
-    private async Task BroadcastPlayerDespawnAsync(ClientSession sourceSession)
+    private async Task UpdatePlayerInterestAsync(ClientSession sourceSession)
     {
         if (sourceSession.PlayerConnection == null)
+            return;
+
+        WorldPlayer? sourcePlayer = _gameWorld.GetPlayer(sourceSession.SessionId);
+
+        if (sourcePlayer == null)
             return;
 
         List<int> nearbySessionIds = _gameWorld.GetNearbyPlayerSessionIds(
             sourceSession.SessionId,
             _serverConfig.SpawnBroadcastRadius);
 
-        if (nearbySessionIds.Count == 0)
-            return;
+        InterestVisibilityChanges sourceChanges = _interestManager.RefreshVisiblePlayers(
+            sourceSession.SessionId,
+            nearbySessionIds);
 
-        PlayerDespawnInfo despawnInfo = new()
-        {
-            CharacterId = sourceSession.PlayerConnection.State.CharacterId
-        };
+        if (sourceChanges.PlayersToSpawn.Count > 0)
+            await SendSpawnPacketsToObserverAsync(sourceSession, sourceChanges.PlayersToSpawn);
 
-        PacketWriter writer = new();
-        PlayerWorldSerializer.WriteDespawnInfo(writer, despawnInfo);
+        if (sourceChanges.PlayersToDespawn.Count > 0)
+            await SendDespawnPacketsToObserverAsync(sourceSession, sourceChanges.PlayersToDespawn);
 
-        byte[] payload = writer.ToArray();
+        await UpdateOtherPlayersInterestForSourceAsync(
+            sourceSession,
+            sourcePlayer,
+            nearbySessionIds);
+    }
+
+    private async Task UpdateOtherPlayersInterestForSourceAsync(
+        ClientSession sourceSession,
+        WorldPlayer sourcePlayer,
+        List<int> nearbySessionIds)
+    {
+        HashSet<int> nearbySessionSet = new(nearbySessionIds);
 
         List<Task> sendTasks = new();
 
-        foreach (int targetSessionId in nearbySessionIds)
+        foreach (int nearbySessionId in nearbySessionSet)
         {
-            if (!_sessions.TryGetValue(targetSessionId, out ClientSession? targetSession))
+            if (!_sessions.TryGetValue(nearbySessionId, out ClientSession? nearbySession))
                 continue;
 
-            if (!targetSession.IsAuthorized || targetSession.PlayerConnection == null)
+            if (!nearbySession.IsAuthorized || nearbySession.PlayerConnection == null)
                 continue;
 
-            sendTasks.Add(targetSession.SendPacketAsync(PacketType.PlayerDespawn, payload));
+            bool added = _interestManager.AddVisiblePlayer(
+                nearbySessionId,
+                sourceSession.SessionId);
+
+            if (!added)
+                continue;
+
+            sendTasks.Add(SendPlayerSpawnToSessionAsync(nearbySession, sourcePlayer));
+        }
+
+        List<int> previousObservers = _interestManager.GetObserversSeeingPlayer(sourceSession.SessionId);
+
+        foreach (int observerSessionId in previousObservers)
+        {
+            if (nearbySessionSet.Contains(observerSessionId))
+                continue;
+
+            if (!_sessions.TryGetValue(observerSessionId, out ClientSession? observerSession))
+                continue;
+
+            bool removed = _interestManager.RemoveVisiblePlayer(
+                observerSessionId,
+                sourceSession.SessionId);
+
+            if (!removed)
+                continue;
+
+            sendTasks.Add(SendPlayerDespawnToSessionAsync(
+                observerSession,
+                sourcePlayer.CharacterId));
+        }
+
+        if (sendTasks.Count > 0)
+            await Task.WhenAll(sendTasks);
+    }
+
+    private async Task SendSpawnPacketsToObserverAsync(
+        ClientSession observerSession,
+        List<int> targetSessionIds)
+    {
+        List<Task> sendTasks = new();
+
+        foreach (int targetSessionId in targetSessionIds)
+        {
+            WorldPlayer? targetPlayer = _gameWorld.GetPlayer(targetSessionId);
+
+            if (targetPlayer == null)
+                continue;
+
+            sendTasks.Add(SendPlayerSpawnToSessionAsync(observerSession, targetPlayer));
         }
 
         if (sendTasks.Count > 0)
@@ -349,8 +352,107 @@ public sealed class GameServer
             await Task.WhenAll(sendTasks);
 
             Console.WriteLine(
-                $"[PLAYER DESPAWN BROADCAST] CharacterId={despawnInfo.CharacterId}, Targets={sendTasks.Count}");
+                $"[INTEREST SPAWN LIST] ObserverSessionId={observerSession.SessionId}, Count={sendTasks.Count}");
         }
+    }
+
+    private async Task SendDespawnPacketsToObserverAsync(
+        ClientSession observerSession,
+        List<int> targetSessionIds)
+    {
+        List<Task> sendTasks = new();
+
+        foreach (int targetSessionId in targetSessionIds)
+        {
+            WorldPlayer? targetPlayer = _gameWorld.GetPlayer(targetSessionId);
+
+            if (targetPlayer == null)
+                continue;
+
+            sendTasks.Add(SendPlayerDespawnToSessionAsync(
+                observerSession,
+                targetPlayer.CharacterId));
+        }
+
+        if (sendTasks.Count > 0)
+        {
+            await Task.WhenAll(sendTasks);
+
+            Console.WriteLine(
+                $"[INTEREST DESPAWN LIST] ObserverSessionId={observerSession.SessionId}, Count={sendTasks.Count}");
+        }
+    }
+
+    private async Task SendPlayerSpawnToSessionAsync(
+        ClientSession observerSession,
+        WorldPlayer targetPlayer)
+    {
+        if (observerSession.SessionId == targetPlayer.SessionId)
+            return;
+
+        PlayerSpawnInfo spawnInfo = targetPlayer.CreateSpawnInfo();
+
+        PacketWriter writer = new();
+        PlayerWorldSerializer.WriteSpawnInfo(writer, spawnInfo);
+
+        await observerSession.SendPacketAsync(PacketType.PlayerSpawn, writer.ToArray());
+
+        Console.WriteLine(
+            $"[PLAYER SPAWN SEND] ObserverSessionId={observerSession.SessionId}, TargetCharacterId={spawnInfo.CharacterId}, Nickname={spawnInfo.Nickname}");
+    }
+
+    private async Task SendPlayerDespawnToSessionAsync(
+        ClientSession observerSession,
+        int targetCharacterId)
+    {
+        PlayerDespawnInfo despawnInfo = new()
+        {
+            CharacterId = targetCharacterId
+        };
+
+        PacketWriter writer = new();
+        PlayerWorldSerializer.WriteDespawnInfo(writer, despawnInfo);
+
+        await observerSession.SendPacketAsync(PacketType.PlayerDespawn, writer.ToArray());
+
+        Console.WriteLine(
+            $"[PLAYER DESPAWN SEND] ObserverSessionId={observerSession.SessionId}, TargetCharacterId={targetCharacterId}");
+    }
+
+    private async Task BroadcastPlayerDespawnAsync(ClientSession sourceSession)
+    {
+        if (sourceSession.PlayerConnection == null)
+            return;
+
+        int sourceSessionId = sourceSession.SessionId;
+        int sourceCharacterId = sourceSession.PlayerConnection.State.CharacterId;
+
+        List<int> observerSessionIds = _interestManager.GetObserversSeeingPlayer(sourceSessionId);
+
+        List<Task> sendTasks = new();
+
+        foreach (int observerSessionId in observerSessionIds)
+        {
+            if (!_sessions.TryGetValue(observerSessionId, out ClientSession? observerSession))
+                continue;
+
+            if (!observerSession.IsAuthorized || observerSession.PlayerConnection == null)
+                continue;
+
+            sendTasks.Add(SendPlayerDespawnToSessionAsync(
+                observerSession,
+                sourceCharacterId));
+        }
+
+        if (sendTasks.Count > 0)
+        {
+            await Task.WhenAll(sendTasks);
+
+            Console.WriteLine(
+                $"[PLAYER DESPAWN BROADCAST] CharacterId={sourceCharacterId}, Targets={sendTasks.Count}");
+        }
+
+        _interestManager.UnregisterPlayer(sourceSessionId);
     }
 
     private void RemoveSession(ClientSession session)
@@ -373,6 +475,7 @@ public sealed class GameServer
         }
 
         _sessions.Clear();
+        _interestManager.Clear();
         _gameWorld.Clear();
 
         _listener?.Stop();
