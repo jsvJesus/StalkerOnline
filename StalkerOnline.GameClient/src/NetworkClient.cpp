@@ -4,6 +4,8 @@
 #include <windows.h>
 
 #include <sstream>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "ws2_32.lib")
@@ -308,7 +310,8 @@ bool NetworkClient::SendAll(const uint8_t* data, int length)
         if (sent == SOCKET_ERROR || sent == 0)
         {
             Log(L"[NET] Send failed.");
-            Stop();
+            _connected = false;
+            CloseSocket();
             return false;
         }
 
@@ -360,8 +363,7 @@ void NetworkClient::ReceiveLoop()
     }
     catch (const std::exception& ex)
     {
-        std::string error = ex.what();
-        Log(L"[NET ERROR] " + Utf8ToWide(error));
+        Log(L"[NET ERROR] " + Utf8ToWide(ex.what()));
     }
 
     _connected = false;

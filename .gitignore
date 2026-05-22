@@ -3,3 +3,20 @@ obj/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/
+
+# C++ GameClient build
+StalkerOnline.GameClient/build/
+StalkerOnline.GameClient/.vs/
+StalkerOnline.GameClient/out/
+
+# Rider
+.idea/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# .NET
+bin/
+obj/

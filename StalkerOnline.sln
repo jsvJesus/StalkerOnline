@@ -1,25 +1,26 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StalkerOnline.Server", "StalkerOnline.Server\StalkerOnline.Server.csproj", "{CBA622C1-7865-4687-A322-2583BC72A69D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StalkerOnline.Client", "StalkerOnline.Client\StalkerOnline.Client.csproj", "{4FA35A85-25F0-4EDA-9191-47757B62CE70}"
-EndProject
+
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StalkerOnline.Shared", "StalkerOnline.Shared\StalkerOnline.Shared.csproj", "{92B6A7E8-2902-4FD9-9B38-48B1685FBF11}"
 EndProject
+
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
+
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{CBA622C1-7865-4687-A322-2583BC72A69D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{CBA622C1-7865-4687-A322-2583BC72A69D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{CBA622C1-7865-4687-A322-2583BC72A69D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{CBA622C1-7865-4687-A322-2583BC72A69D}.Release|Any CPU.Build.0 = Release|Any CPU
-		{4FA35A85-25F0-4EDA-9191-47757B62CE70}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{4FA35A85-25F0-4EDA-9191-47757B62CE70}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{4FA35A85-25F0-4EDA-9191-47757B62CE70}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{4FA35A85-25F0-4EDA-9191-47757B62CE70}.Release|Any CPU.Build.0 = Release|Any CPU
+
+
 		{92B6A7E8-2902-4FD9-9B38-48B1685FBF11}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{92B6A7E8-2902-4FD9-9B38-48B1685FBF11}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{92B6A7E8-2902-4FD9-9B38-48B1685FBF11}.Release|Any CPU.ActiveCfg = Release|Any CPU

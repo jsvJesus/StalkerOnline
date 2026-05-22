@@ -25,5 +25,3 @@ target_link_libraries(StalkerOnline.GameClient PRIVATE
 if (MSVC)
     target_compile_options(StalkerOnline.GameClient PRIVATE /W4 /permissive-)
 endif()
-
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT StalkerOnline.GameClient)

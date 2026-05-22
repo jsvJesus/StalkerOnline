@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -25,6 +26,7 @@ namespace
     constexpr int IdLogEdit = 3001;
 
     constexpr UINT WmAppendLog = WM_APP + 1;
+    constexpr UINT WmSetControlsEnabled = WM_APP + 2;
 
     HWND g_mainWindow = nullptr;
 
@@ -71,6 +73,36 @@ namespace
         return result;
     }
 
+    std::wstring Utf8ToWide(const std::string& value)
+    {
+        if (value.empty())
+            return L"";
+
+        int requiredSize = MultiByteToWideChar(
+            CP_UTF8,
+            0,
+            value.data(),
+            static_cast<int>(value.size()),
+            nullptr,
+            0);
+
+        if (requiredSize <= 0)
+            return L"";
+
+        std::wstring result;
+        result.resize(static_cast<size_t>(requiredSize));
+
+        MultiByteToWideChar(
+            CP_UTF8,
+            0,
+            value.data(),
+            static_cast<int>(value.size()),
+            result.data(),
+            requiredSize);
+
+        return result;
+    }
+
     std::wstring GetWindowTextValue(HWND hwnd)
     {
         int length = GetWindowTextLengthW(hwnd);
@@ -78,12 +110,12 @@ namespace
         if (length <= 0)
             return L"";
 
-        std::wstring text;
-        text.resize(static_cast<size_t>(length));
+        std::vector<wchar_t> buffer;
+        buffer.resize(static_cast<size_t>(length) + 1);
 
-        GetWindowTextW(hwnd, text.data(), length + 1);
+        GetWindowTextW(hwnd, buffer.data(), length + 1);
 
-        return text;
+        return std::wstring(buffer.data());
     }
 
     uint16_t ReadPort()
@@ -112,7 +144,11 @@ namespace
 
         int length = GetWindowTextLengthW(g_logEdit);
 
-        SendMessageW(g_logEdit, EM_SETSEL, static_cast<WPARAM>(length), static_cast<LPARAM>(length));
+        SendMessageW(
+            g_logEdit,
+            EM_SETSEL,
+            static_cast<WPARAM>(length),
+            static_cast<LPARAM>(length));
 
         std::wstring line = text + L"\r\n";
 
@@ -137,15 +173,25 @@ namespace
             reinterpret_cast<LPARAM>(heapText));
     }
 
-    void SetControlsEnabled(bool enabled)
+    void SetControlsEnabledDirect(bool enabled)
     {
         EnableWindow(g_hostEdit, enabled);
         EnableWindow(g_portEdit, enabled);
         EnableWindow(g_loginEdit, enabled);
         EnableWindow(g_emailEdit, enabled);
         EnableWindow(g_passwordEdit, enabled);
+
         EnableWindow(GetDlgItem(g_mainWindow, IdLoginButton), enabled);
         EnableWindow(GetDlgItem(g_mainWindow, IdRegisterButton), enabled);
+    }
+
+    void PostSetControlsEnabled(bool enabled)
+    {
+        PostMessageW(
+            g_mainWindow,
+            WmSetControlsEnabled,
+            static_cast<WPARAM>(enabled ? 1 : 0),
+            0);
     }
 
     void RunLogin()
@@ -178,7 +224,7 @@ namespace
             return;
         }
 
-        SetControlsEnabled(false);
+        PostSetControlsEnabled(false);
 
         std::thread([host, port, login, password]()
         {
@@ -187,21 +233,21 @@ namespace
             if (!g_client->Connect(host, port))
             {
                 PostLog(L"[CLIENT] Connect failed.");
-                SetControlsEnabled(true);
+                PostSetControlsEnabled(true);
                 return;
             }
 
             LoginResult result = g_client->Login(login, password);
 
-            std::wstring resultText = result.Success ? L"true" : L"false";
-
             PostLog(
-                L"[LOGIN] Success=" + resultText +
-                L", Message=" + std::wstring(result.Message.begin(), result.Message.end()));
+                L"[LOGIN] Success=" +
+                std::wstring(result.Success ? L"true" : L"false") +
+                L", Message=" +
+                Utf8ToWide(result.Message));
 
             if (!result.Success)
             {
-                SetControlsEnabled(true);
+                PostSetControlsEnabled(true);
                 return;
             }
 
@@ -248,7 +294,7 @@ namespace
             return;
         }
 
-        SetControlsEnabled(false);
+        PostSetControlsEnabled(false);
 
         std::thread([host, port, login, email, password]()
         {
@@ -257,7 +303,7 @@ namespace
             if (!g_client->Connect(host, port))
             {
                 PostLog(L"[CLIENT] Connect failed.");
-                SetControlsEnabled(true);
+                PostSetControlsEnabled(true);
                 return;
             }
 
@@ -267,12 +313,12 @@ namespace
             ss
                 << L"[REGISTER] Success=" << (result.Success ? L"true" : L"false")
                 << L", AccountId=" << result.AccountId
-                << L", Login=" << std::wstring(result.Login.begin(), result.Login.end())
-                << L", Message=" << std::wstring(result.Message.begin(), result.Message.end());
+                << L", Login=" << Utf8ToWide(result.Login)
+                << L", Message=" << Utf8ToWide(result.Message);
 
             PostLog(ss.str());
 
-            SetControlsEnabled(true);
+            PostSetControlsEnabled(true);
 
         }).detach();
     }
@@ -282,7 +328,7 @@ namespace
         if (g_client)
             g_client->Stop();
 
-        SetControlsEnabled(true);
+        PostSetControlsEnabled(true);
         PostLog(L"[CLIENT] Disconnected.");
     }
 
@@ -370,7 +416,6 @@ namespace
     void ApplyDefaultFont(HWND hwnd)
     {
         HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
 
@@ -431,7 +476,7 @@ namespace
         ApplyFontToChildren(hwnd);
 
         AppendLogDirect(L"Stalker Online Game Client started.");
-        AppendLogDirect(L"Use Login/Register. This is no-console real client window.");
+        AppendLogDirect(L"Real C++ client window. Login/Register ready.");
     }
 
     LRESULT CALLBACK WindowProc(
@@ -491,6 +536,13 @@ namespace
                     delete text;
                 }
 
+                return 0;
+            }
+
+            case WmSetControlsEnabled:
+            {
+                bool enabled = wParam != 0;
+                SetControlsEnabledDirect(enabled);
                 return 0;
             }
 

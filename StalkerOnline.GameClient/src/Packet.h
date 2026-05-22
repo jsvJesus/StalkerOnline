@@ -80,6 +80,7 @@ public:
     {
         uint32_t bits = 0;
         static_assert(sizeof(float) == sizeof(uint32_t));
+
         std::memcpy(&bits, &value, sizeof(float));
 
         _buffer.push_back(static_cast<uint8_t>(bits & 0xFF));
@@ -175,7 +176,12 @@ public:
         value.resize(static_cast<size_t>(length));
 
         if (length > 0)
-            std::memcpy(value.data(), _buffer.data() + _offset, static_cast<size_t>(length));
+        {
+            std::memcpy(
+                value.data(),
+                _buffer.data() + _offset,
+                static_cast<size_t>(length));
+        }
 
         _offset += static_cast<size_t>(length);
         return value;
