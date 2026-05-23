@@ -1,6 +1,7 @@
 #include "NetworkClient.h"
 #include "UI/UiStyle.h"
 #include "Engine/Renderer/Dx11Renderer.h"
+#include "Engine/Renderer/Dx11DebugTriangle.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_win32.h>
@@ -31,6 +32,7 @@ namespace
     constexpr uint16_t DefaultServerPort = 7777;
 
     std::unique_ptr<StalkerOnline::Engine::Dx11Renderer> g_renderer;
+    std::unique_ptr<StalkerOnline::Engine::Dx11DebugTriangle> g_debugTriangle;
 
     std::unique_ptr<NetworkClient> g_client;
 
@@ -879,6 +881,34 @@ int WINAPI wWinMain(
     	g_renderer->GetDeviceContext()
 	);
 
+    g_debugTriangle = std::make_unique<StalkerOnline::Engine::Dx11DebugTriangle>();
+
+        if (!g_debugTriangle->Initialize(g_renderer->GetDevice()))
+        {
+            MessageBoxW(
+            hwnd,
+            L"Failed to initialize Dx11DebugTriangle.",
+            L"Stalker Online",
+            MB_ICONERROR
+        );
+
+        g_debugTriangle.reset();
+
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+       ImGui::DestroyContext();
+
+        if (g_renderer)
+        {
+            g_renderer->Shutdown();
+            g_renderer.reset();
+        }
+
+        DestroyWindow(hwnd);
+        UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
+        return 1;
+    }
+
     LoadRememberLogin();
     g_client = std::make_unique<NetworkClient>(
         [](const std::wstring& text)
@@ -965,15 +995,30 @@ int WINAPI wWinMain(
 
 		g_renderer->BeginFrame(clearColor);
 
-		ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        if (g_debugTriangle)
+        {
+            g_debugTriangle->Render(
+                g_renderer->GetDeviceContext(),
+                g_renderer->GetWidth(),
+                g_renderer->GetHeight()
+            );
+        }
 
-		g_renderer->EndFrame(true);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+        g_renderer->EndFrame(true);
     }
 
     if (g_client)
     {
         g_client->Stop();
         g_client.reset();
+    }
+    
+    if (g_debugTriangle)
+    {
+        g_debugTriangle->Shutdown();
+        g_debugTriangle.reset();
     }
 
     ImGui_ImplDX11_Shutdown();
