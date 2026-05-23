@@ -21,6 +21,7 @@
 #include <chrono>
 #include <fstream>
 #include <sstream>
+#include <cmath>
 #include <ws2tcpip.h>
 
 namespace
@@ -60,6 +61,12 @@ namespace
     std::string g_statusText = "Disconnected";
 
     float g_rotationZ = 0.0f;
+
+    constexpr float MouseLookSensitivity = 0.14f;
+    constexpr float KeyboardRotationSpeed = 120.0f;
+    constexpr float MoveSendIntervalSeconds = 0.05f;
+
+    std::chrono::steady_clock::time_point g_lastMoveSendTime = std::chrono::steady_clock::now();
 
     std::string WideToUtf8(const std::wstring& value)
     {
@@ -656,34 +663,87 @@ namespace
         SetStatus("Disconnected");
     }
 
-    void SendMove(float directionX, float directionY)
+    float NormalizeRotationZ(float value)
+    {
+        while (value >= 360.0f)
+            value -= 360.0f;
+
+        while (value < 0.0f)
+            value += 360.0f;
+
+        return value;
+    }
+
+    float DegreesToRadians(float degrees)
+    {
+        return degrees * 3.14159265358979323846f / 180.0f;
+    }
+
+    float ClampMoveDeltaTime(float deltaTime)
+    {
+        if (deltaTime < 0.016f)
+            return 0.016f;
+
+        if (deltaTime > 0.10f)
+            return 0.10f;
+
+        return deltaTime;
+    }
+
+    void SendMove(float directionX, float directionY, float deltaTime = 0.05f)
     {
         if (!g_client || !g_client->IsConnected())
-        {
-            SetStatus("Move failed: not connected");
             return;
+
+        const float length = std::sqrt(directionX * directionX + directionY * directionY);
+
+        if (length > 1.0f)
+        {
+            directionX /= length;
+            directionY /= length;
         }
 
-        g_client->SendMoveRequest(directionX, directionY, g_rotationZ);
+        g_client->SendMoveRequest(
+            directionX,
+            directionY,
+            g_rotationZ,
+            ClampMoveDeltaTime(deltaTime)
+        );
+    }
+
+    void SendLocalMove(float forwardAmount, float rightAmount, float deltaTime = 0.05f)
+    {
+        const float yaw = DegreesToRadians(g_rotationZ);
+
+        const float forwardX = std::sin(yaw);
+        const float forwardY = std::cos(yaw);
+
+        const float rightX = std::cos(yaw);
+        const float rightY = -std::sin(yaw);
+
+        const float worldDirectionX = forwardX * forwardAmount + rightX * rightAmount;
+        const float worldDirectionY = forwardY * forwardAmount + rightY * rightAmount;
+
+        SendMove(worldDirectionX, worldDirectionY, deltaTime);
+    }
+
+    void SendRotationOnly(float deltaTime = 0.05f)
+    {
+        if (!g_client || !g_client->IsConnected())
+            return;
+
+        g_client->SendMoveRequest(
+            0.0f,
+            0.0f,
+            g_rotationZ,
+            ClampMoveDeltaTime(deltaTime)
+        );
     }
 
     void RotatePlayer(float delta)
     {
-        g_rotationZ += delta;
-
-        if (g_rotationZ > 360.0f)
-            g_rotationZ -= 360.0f;
-
-        if (g_rotationZ < -360.0f)
-            g_rotationZ += 360.0f;
-
-        if (!g_client || !g_client->IsConnected())
-        {
-            SetStatus("Rotate failed: not connected");
-            return;
-        }
-
-        g_client->SendMoveRequest(0.0f, 0.0f, g_rotationZ);
+        g_rotationZ = NormalizeRotationZ(g_rotationZ + delta);
+        SendRotationOnly(0.05f);
     }
 
     void PickupWorldItem(int32_t worldObjectId)
@@ -770,47 +830,109 @@ namespace
 
         ImGuiIO& io = ImGui::GetIO();
 
-        if (io.WantCaptureKeyboard)
+        bool rotationChanged = false;
+
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Right))
+        {
+            const float mouseDeltaX = io.MouseDelta.x;
+
+            if (std::fabs(mouseDeltaX) > 0.001f)
+            {
+                g_rotationZ = NormalizeRotationZ(
+                    g_rotationZ + mouseDeltaX * MouseLookSensitivity
+                );
+
+                rotationChanged = true;
+            }
+        }
+
+        if (!io.WantCaptureKeyboard)
+        {
+            if (ImGui::IsKeyPressed(ImGuiKey_C))
+                ToggleCameraMode();
+
+            if (ImGui::IsKeyPressed(ImGuiKey_F))
+                PickupWorldItem(g_gameScreenState.SelectedWorldItemId);
+
+            if (ImGui::IsKeyDown(ImGuiKey_Q))
+            {
+                g_rotationZ = NormalizeRotationZ(
+                    g_rotationZ - KeyboardRotationSpeed * io.DeltaTime
+                );
+
+                rotationChanged = true;
+            }
+
+            if (ImGui::IsKeyDown(ImGuiKey_E))
+            {
+                g_rotationZ = NormalizeRotationZ(
+                    g_rotationZ + KeyboardRotationSpeed * io.DeltaTime
+                );
+
+                rotationChanged = true;
+            }
+        }
+
+        float forwardAmount = 0.0f;
+        float rightAmount = 0.0f;
+
+        if (!io.WantCaptureKeyboard)
+        {
+            if (ImGui::IsKeyDown(ImGuiKey_W))
+                forwardAmount += 1.0f;
+
+            if (ImGui::IsKeyDown(ImGuiKey_S))
+                forwardAmount -= 1.0f;
+
+            if (ImGui::IsKeyDown(ImGuiKey_D))
+                rightAmount += 1.0f;
+
+            if (ImGui::IsKeyDown(ImGuiKey_A))
+                rightAmount -= 1.0f;
+        }
+
+        const bool hasMovement =
+            std::fabs(forwardAmount) > 0.001f ||
+            std::fabs(rightAmount) > 0.001f;
+
+        if (!hasMovement && !rotationChanged)
             return;
 
-        if (ImGui::IsKeyPressed(ImGuiKey_W))
-            SendMove(0.0f, 1.0f);
+        const auto now = std::chrono::steady_clock::now();
+        const float elapsedSeconds = std::chrono::duration<float>(now - g_lastMoveSendTime).count();
 
-        if (ImGui::IsKeyPressed(ImGuiKey_S))
-            SendMove(0.0f, -1.0f);
+        if (elapsedSeconds < MoveSendIntervalSeconds)
+           return;
 
-        if (ImGui::IsKeyPressed(ImGuiKey_A))
-            SendMove(-1.0f, 0.0f);
+        g_lastMoveSendTime = now;
 
-        if (ImGui::IsKeyPressed(ImGuiKey_D))
-            SendMove(1.0f, 0.0f);
-
-        if (ImGui::IsKeyPressed(ImGuiKey_Q))
-            RotatePlayer(-15.0f);
-
-        if (ImGui::IsKeyPressed(ImGuiKey_E))
-            RotatePlayer(15.0f);
-
-        if (ImGui::IsKeyPressed(ImGuiKey_F))
-            PickupWorldItem(g_gameScreenState.SelectedWorldItemId);
-
-        if (ImGui::IsKeyPressed(ImGuiKey_C))
-            ToggleCameraMode();
+        if (hasMovement)
+        {
+            SendLocalMove(
+                forwardAmount,
+                rightAmount,
+                elapsedSeconds
+            );
+        }
+        else
+        {
+            SendRotationOnly(elapsedSeconds);
+        }
     }
 
     void HandleGameScreenActions(const StalkerOnline::UI::GameScreenActions& actions)
     {
         if (actions.MoveUpPressed)
-            SendMove(0.0f, 1.0f);
+            SendLocalMove(1.0f, 0.0f);
 
         if (actions.MoveDownPressed)
-            SendMove(0.0f, -1.0f);
+            SendLocalMove(-1.0f, 0.0f);
 
         if (actions.MoveLeftPressed)
-            SendMove(-1.0f, 0.0f);
+            SendLocalMove(0.0f, -1.0f);
 
         if (actions.MoveRightPressed)
-            SendMove(1.0f, 0.0f);
+            SendLocalMove(0.0f, 1.0f);
 
         if (actions.RotateLeftPressed)
             RotatePlayer(-15.0f);

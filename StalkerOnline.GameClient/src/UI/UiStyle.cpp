@@ -1047,7 +1047,7 @@ namespace StalkerOnline::UI
             controlsPanelSize
         ))
         {
-            ImGui::TextColored(ColorFromBytes(151, 143, 113), "Movement: W/A/S/D | Rotate: Q/E | Camera: C");
+            ImGui::TextColored(ColorFromBytes(151, 143, 113), "Movement: W/A/S/D | Rotate: Q/E | Camera: C | F pickup");
 
             ImGui::Dummy(ImVec2(1.0f, 6.0f));
 
