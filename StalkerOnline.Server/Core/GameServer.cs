@@ -52,6 +52,10 @@ public sealed class GameServer
 
         _characterRepository = new CharacterRepository(_databaseConnectionFactory);
         _characterService = new CharacterService(_characterRepository);
+        
+        _itemRepository = new ItemRepository(_databaseConnectionFactory);
+        _inventoryRepository = new InventoryRepository(_databaseConnectionFactory);
+        _inventoryService = new InventoryService(_inventoryRepository, _itemRepository);
 
         _gameWorld = new GameWorld(
             _serverConfig.MoveSpeed,
