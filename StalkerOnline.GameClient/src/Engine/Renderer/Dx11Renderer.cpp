@@ -81,6 +81,12 @@ namespace StalkerOnline::Engine
             return false;
         }
 
+        if (!CreateDepthStencil())
+        {
+            Shutdown();
+            return false;
+        }
+
         m_initialized = true;
         return true;
     }
@@ -113,13 +119,23 @@ namespace StalkerOnline::Engine
         m_deviceContext->OMSetRenderTargets(
             1,
             &renderTarget,
-            nullptr
+            m_depthStencilView.Get()
         );
 
         m_deviceContext->ClearRenderTargetView(
             m_mainRenderTargetView.Get(),
             clearColor
         );
+
+        if (m_depthStencilView)
+        {
+            m_deviceContext->ClearDepthStencilView(
+                m_depthStencilView.Get(),
+                D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
+                1.0f,
+                0
+            );
+        }
     }
 
     void Dx11Renderer::EndFrame(bool enableVSync)
@@ -158,6 +174,7 @@ namespace StalkerOnline::Engine
             return;
 
         CreateRenderTarget();
+        CreateDepthStencil();
     }
 
     ID3D11Device* Dx11Renderer::GetDevice() const
@@ -178,6 +195,11 @@ namespace StalkerOnline::Engine
     ID3D11RenderTargetView* Dx11Renderer::GetMainRenderTargetView() const
     {
         return m_mainRenderTargetView.Get();
+    }
+
+    ID3D11DepthStencilView* Dx11Renderer::GetDepthStencilView() const
+    {
+        return m_depthStencilView.Get();
     }
 
     std::uint32_t Dx11Renderer::GetWidth() const
@@ -214,8 +236,46 @@ namespace StalkerOnline::Engine
         return SUCCEEDED(createViewResult);
     }
 
+    bool Dx11Renderer::CreateDepthStencil()
+    {
+        if (!m_device)
+            return false;
+
+        D3D11_TEXTURE2D_DESC depthDesc{};
+        depthDesc.Width = m_width;
+        depthDesc.Height = m_height;
+        depthDesc.MipLevels = 1;
+        depthDesc.ArraySize = 1;
+        depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        depthDesc.SampleDesc.Count = 1;
+        depthDesc.SampleDesc.Quality = 0;
+        depthDesc.Usage = D3D11_USAGE_DEFAULT;
+        depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+        depthDesc.CPUAccessFlags = 0;
+        depthDesc.MiscFlags = 0;
+
+        const HRESULT createTextureResult = m_device->CreateTexture2D(
+            &depthDesc,
+            nullptr,
+            m_depthStencilBuffer.GetAddressOf()
+        );
+
+        if (FAILED(createTextureResult))
+            return false;
+
+        const HRESULT createViewResult = m_device->CreateDepthStencilView(
+            m_depthStencilBuffer.Get(),
+            nullptr,
+            m_depthStencilView.GetAddressOf()
+        );
+
+        return SUCCEEDED(createViewResult);
+    }
+
     void Dx11Renderer::CleanupRenderTarget()
     {
+        m_depthStencilView.Reset();
+        m_depthStencilBuffer.Reset();
         m_mainRenderTargetView.Reset();
     }
 }

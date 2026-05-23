@@ -23,6 +23,8 @@ add_executable(StalkerOnline.GameClient WIN32
     src/Engine/Renderer/Dx11Renderer.cpp
     src/Engine/Renderer/Dx11DebugTriangle.h
     src/Engine/Renderer/Dx11DebugTriangle.cpp
+    src/Engine/Renderer/Dx11WorldRenderer.h
+    src/Engine/Renderer/Dx11WorldRenderer.cpp
 
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp

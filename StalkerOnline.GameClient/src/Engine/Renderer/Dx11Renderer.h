@@ -30,12 +30,14 @@ namespace StalkerOnline::Engine
         ID3D11DeviceContext* GetDeviceContext() const;
         IDXGISwapChain* GetSwapChain() const;
         ID3D11RenderTargetView* GetMainRenderTargetView() const;
+        ID3D11DepthStencilView* GetDepthStencilView() const;
 
         std::uint32_t GetWidth() const;
         std::uint32_t GetHeight() const;
 
     private:
         bool CreateRenderTarget();
+        bool CreateDepthStencil();
         void CleanupRenderTarget();
 
     private:
@@ -45,6 +47,9 @@ namespace StalkerOnline::Engine
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_deviceContext;
         Microsoft::WRL::ComPtr<IDXGISwapChain> m_swapChain;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_mainRenderTargetView;
+
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> m_depthStencilBuffer;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_depthStencilView;
 
         std::uint32_t m_width = 1280;
         std::uint32_t m_height = 800;

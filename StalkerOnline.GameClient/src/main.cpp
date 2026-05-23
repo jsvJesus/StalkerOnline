@@ -1,7 +1,7 @@
 #include "NetworkClient.h"
 #include "UI/UiStyle.h"
 #include "Engine/Renderer/Dx11Renderer.h"
-#include "Engine/Renderer/Dx11DebugTriangle.h"
+#include "Engine/Renderer/Dx11WorldRenderer.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_win32.h>
@@ -32,7 +32,8 @@ namespace
     constexpr uint16_t DefaultServerPort = 7777;
 
     std::unique_ptr<StalkerOnline::Engine::Dx11Renderer> g_renderer;
-    std::unique_ptr<StalkerOnline::Engine::Dx11DebugTriangle> g_debugTriangle;
+    std::unique_ptr<StalkerOnline::Engine::Dx11WorldRenderer> g_worldRenderer;
+    StalkerOnline::Engine::GameCameraMode g_cameraMode = StalkerOnline::Engine::GameCameraMode::ThirdPerson;
 
     std::unique_ptr<NetworkClient> g_client;
 
@@ -704,6 +705,64 @@ namespace
         SetStatus("Pickup request sent. WorldObjectId=" + std::to_string(worldObjectId));
     }
 
+    void ToggleCameraMode()
+    {
+        if (g_cameraMode == StalkerOnline::Engine::GameCameraMode::ThirdPerson)
+        {
+            g_cameraMode = StalkerOnline::Engine::GameCameraMode::FirstPerson;
+            SetStatus("Camera mode: FPS");
+        }
+        else
+        {
+            g_cameraMode = StalkerOnline::Engine::GameCameraMode::ThirdPerson;
+            SetStatus("Camera mode: TPS");
+        }
+    }
+
+    void RenderWorld3D()
+    {
+        if (!g_worldRenderer)
+            return;
+
+        if (!g_authenticated.load())
+            return;
+
+        StalkerOnline::Engine::WorldRenderPlayer renderPlayer;
+        renderPlayer.Valid = g_gameScreenState.Player.CharacterId > 0;
+
+        renderPlayer.PositionX = g_gameScreenState.Player.PosX;
+        renderPlayer.PositionY = g_gameScreenState.Player.PosY;
+        renderPlayer.PositionZ = g_gameScreenState.Player.PosZ;
+
+        renderPlayer.RotationZ = g_rotationZ;
+
+        std::vector<StalkerOnline::Engine::WorldRenderItem> renderItems;
+        renderItems.reserve(g_gameScreenState.WorldItems.size());
+
+        for (const StalkerOnline::UI::WorldItemUi& item : g_gameScreenState.WorldItems)
+        {
+            StalkerOnline::Engine::WorldRenderItem renderItem;
+            renderItem.WorldObjectId = item.WorldObjectId;
+
+            renderItem.PositionX = item.PositionX;
+            renderItem.PositionY = item.PositionY;
+            renderItem.PositionZ = item.PositionZ;
+
+            renderItem.Size = 0.28f;
+
+            renderItems.push_back(renderItem);
+        }
+
+        g_worldRenderer->Render(
+            g_renderer->GetDeviceContext(),
+            g_renderer->GetWidth(),
+            g_renderer->GetHeight(),
+            renderPlayer,
+            renderItems,
+            g_cameraMode
+        );
+    }
+
     void HandleKeyboardGameInput()
     {
         if (!g_authenticated.load())
@@ -734,6 +793,9 @@ namespace
 
         if (ImGui::IsKeyPressed(ImGuiKey_F))
             PickupWorldItem(g_gameScreenState.SelectedWorldItemId);
+
+        if (ImGui::IsKeyPressed(ImGuiKey_C))
+            ToggleCameraMode();
     }
 
     void HandleGameScreenActions(const StalkerOnline::UI::GameScreenActions& actions)
@@ -881,22 +943,22 @@ int WINAPI wWinMain(
     	g_renderer->GetDeviceContext()
 	);
 
-    g_debugTriangle = std::make_unique<StalkerOnline::Engine::Dx11DebugTriangle>();
+    g_worldRenderer = std::make_unique<StalkerOnline::Engine::Dx11WorldRenderer>();
 
-        if (!g_debugTriangle->Initialize(g_renderer->GetDevice()))
-        {
-            MessageBoxW(
+    if (!g_worldRenderer->Initialize(g_renderer->GetDevice()))
+    {
+        MessageBoxW(
             hwnd,
-            L"Failed to initialize Dx11DebugTriangle.",
+            L"Failed to initialize Dx11WorldRenderer.",
             L"Stalker Online",
             MB_ICONERROR
         );
 
-        g_debugTriangle.reset();
+        g_worldRenderer.reset();
 
         ImGui_ImplDX11_Shutdown();
         ImGui_ImplWin32_Shutdown();
-       ImGui::DestroyContext();
+        ImGui::DestroyContext();
 
         if (g_renderer)
         {
@@ -995,14 +1057,7 @@ int WINAPI wWinMain(
 
 		g_renderer->BeginFrame(clearColor);
 
-        if (g_debugTriangle)
-        {
-            g_debugTriangle->Render(
-                g_renderer->GetDeviceContext(),
-                g_renderer->GetWidth(),
-                g_renderer->GetHeight()
-            );
-        }
+        RenderWorld3D();
 
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
@@ -1015,10 +1070,10 @@ int WINAPI wWinMain(
         g_client.reset();
     }
     
-    if (g_debugTriangle)
+    if (g_worldRenderer)
     {
-        g_debugTriangle->Shutdown();
-        g_debugTriangle.reset();
+        g_worldRenderer->Shutdown();
+        g_worldRenderer.reset();
     }
 
     ImGui_ImplDX11_Shutdown();
