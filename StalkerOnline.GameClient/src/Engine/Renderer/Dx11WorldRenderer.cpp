@@ -199,6 +199,125 @@ namespace StalkerOnline::Engine
                 zAxisColor
             );
         }
+		
+		void AddScreenGradientQuad(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            float topY,
+            float bottomY,
+            const Color& topColor,
+            const Color& bottomColor
+        )
+        {
+            const float z = 0.999f;
+
+            const Float3 leftTop{ -1.0f, topY, z };
+            const Float3 rightTop{ 1.0f, topY, z };
+            const Float3 rightBottom{ 1.0f, bottomY, z };
+            const Float3 leftBottom{ -1.0f, bottomY, z };
+
+            AddVertex(vertices, leftTop, topColor);
+            AddVertex(vertices, rightTop, topColor);
+            AddVertex(vertices, rightBottom, bottomColor);
+
+            AddVertex(vertices, leftTop, topColor);
+            AddVertex(vertices, rightBottom, bottomColor);
+            AddVertex(vertices, leftBottom, bottomColor);
+        }
+
+        void AddScreenDisc(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            float centerX,
+            float centerY,
+            float radiusY,
+            const Color& color,
+            std::uint32_t viewportWidth,
+            std::uint32_t viewportHeight
+        )
+        {
+            if (viewportWidth == 0 || viewportHeight == 0)
+                return;
+
+            constexpr int segmentCount = 48;
+            constexpr float discZ = 0.998f;
+
+            const float aspectFix =
+                static_cast<float>(viewportHeight) / static_cast<float>(viewportWidth);
+
+            const float radiusX = radiusY * aspectFix;
+
+            const Float3 center{ centerX, centerY, discZ };
+
+            for (int i = 0; i < segmentCount; ++i)
+            {
+                const float angleA = static_cast<float>(i) / static_cast<float>(segmentCount) * Pi * 2.0f;
+                const float angleB = static_cast<float>(i + 1) / static_cast<float>(segmentCount) * Pi * 2.0f;
+
+                const Float3 pointA
+                {
+                    centerX + std::cos(angleA) * radiusX,
+                    centerY + std::sin(angleA) * radiusY,
+                    discZ
+                };
+
+                const Float3 pointB
+                {
+                    centerX + std::cos(angleB) * radiusX,
+                    centerY + std::sin(angleB) * radiusY,
+                    discZ
+                };
+
+                AddTriangle(vertices, center, pointA, pointB, color);
+            }
+        }
+
+        void AddSkyAndSunScreenSpace(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            std::uint32_t viewportWidth,
+            std::uint32_t viewportHeight
+        )
+        {
+            const Color skyTop{ 0.035f, 0.055f, 0.075f, 1.0f };
+            const Color skyMid{ 0.090f, 0.125f, 0.150f, 1.0f };
+            const Color skyHorizon{ 0.145f, 0.160f, 0.145f, 1.0f };
+            const Color groundFog{ 0.055f, 0.065f, 0.050f, 1.0f };
+
+            AddScreenGradientQuad(vertices, 1.0f, 0.35f, skyTop, skyMid);
+            AddScreenGradientQuad(vertices, 0.35f, -0.15f, skyMid, skyHorizon);
+            AddScreenGradientQuad(vertices, -0.15f, -1.0f, skyHorizon, groundFog);
+
+            const float sunX = 0.56f;
+            const float sunY = 0.62f;
+
+            AddScreenDisc(
+                vertices,
+                sunX,
+                sunY,
+                0.19f,
+                Color{ 0.22f, 0.18f, 0.09f, 1.0f },
+                viewportWidth,
+                viewportHeight
+            );
+
+            AddScreenDisc(
+                vertices,
+                sunX,
+                sunY,
+                0.115f,
+                Color{ 0.72f, 0.47f, 0.15f, 1.0f },
+                viewportWidth,
+                viewportHeight
+            );
+
+            AddScreenDisc(
+                vertices,
+                sunX,
+                sunY,
+                0.055f,
+                Color{ 1.0f, 0.86f, 0.38f, 1.0f },
+                viewportWidth,
+                viewportHeight
+            );
+        }
 
         void AddPlayerForwardLine(
             std::vector<Dx11WorldRenderer::Vertex>& vertices,
@@ -395,17 +514,19 @@ namespace StalkerOnline::Engine
     }
 
     void Dx11WorldRenderer::Shutdown()
-    {
-        m_rasterizerState.Reset();
-        m_cameraConstantBuffer.Reset();
-        m_dynamicVertexBuffer.Reset();
+	{
+		m_skyDepthStencilState.Reset();
+		m_rasterizerState.Reset();
 
-        m_inputLayout.Reset();
-        m_pixelShader.Reset();
-        m_vertexShader.Reset();
+		m_cameraConstantBuffer.Reset();
+		m_dynamicVertexBuffer.Reset();
 
-        m_initialized = false;
-    }
+		m_inputLayout.Reset();
+		m_pixelShader.Reset();
+		m_vertexShader.Reset();
+
+		m_initialized = false;
+	}
 
     void Dx11WorldRenderer::Render(
         ID3D11DeviceContext* deviceContext,
@@ -434,9 +555,51 @@ namespace StalkerOnline::Engine
         viewport.MaxDepth = 1.0f;
 
         deviceContext->RSSetViewports(1, &viewport);
-        deviceContext->RSSetState(m_rasterizerState.Get());
+		deviceContext->RSSetState(m_rasterizerState.Get());
 
-        const DirectX::XMMATRIX viewProjection = BuildViewProjection(
+		deviceContext->VSSetShader(m_vertexShader.Get(), nullptr, 0);
+		deviceContext->PSSetShader(m_pixelShader.Get(), nullptr, 0);
+		deviceContext->IASetInputLayout(m_inputLayout.Get());
+
+		ID3D11Buffer* cameraBuffers[] =
+		{
+			m_cameraConstantBuffer.Get()
+		};
+
+		deviceContext->VSSetConstantBuffers(0, 1, cameraBuffers);
+
+		CameraConstantBuffer skyCameraData{};
+		skyCameraData.ViewProjection = DirectX::XMMatrixIdentity();
+
+		deviceContext->UpdateSubresource(
+			m_cameraConstantBuffer.Get(),
+			0,
+			nullptr,
+			&skyCameraData,
+			0,
+			0
+		);
+
+		deviceContext->OMSetDepthStencilState(m_skyDepthStencilState.Get(), 0);
+
+		std::vector<Vertex> skyVertices;
+		skyVertices.reserve(256);
+
+		AddSkyAndSunScreenSpace(
+			skyVertices,
+			viewportWidth,
+			viewportHeight
+		);
+
+		UploadAndDraw(
+			deviceContext,
+			skyVertices,
+			D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+		);
+
+		deviceContext->OMSetDepthStencilState(nullptr, 0);
+
+		const DirectX::XMMATRIX viewProjection = BuildViewProjection(
             player,
             viewportWidth,
             viewportHeight,
@@ -454,17 +617,6 @@ namespace StalkerOnline::Engine
             0,
             0
         );
-
-        ID3D11Buffer* cameraBuffers[] =
-        {
-            m_cameraConstantBuffer.Get()
-        };
-
-        deviceContext->VSSetConstantBuffers(0, 1, cameraBuffers);
-
-        deviceContext->VSSetShader(m_vertexShader.Get(), nullptr, 0);
-        deviceContext->PSSetShader(m_pixelShader.Get(), nullptr, 0);
-        deviceContext->IASetInputLayout(m_inputLayout.Get());
 
         std::vector<Vertex> lineVertices;
         lineVertices.reserve(512);
@@ -687,26 +839,43 @@ float4 PSMain(PS_INPUT input) : SV_TARGET
     }
 
     bool Dx11WorldRenderer::CreateStates(ID3D11Device* device)
-    {
-        D3D11_RASTERIZER_DESC rasterizerDesc{};
-        rasterizerDesc.FillMode = D3D11_FILL_SOLID;
-        rasterizerDesc.CullMode = D3D11_CULL_NONE;
-        rasterizerDesc.FrontCounterClockwise = FALSE;
-        rasterizerDesc.DepthBias = 0;
-        rasterizerDesc.DepthBiasClamp = 0.0f;
-        rasterizerDesc.SlopeScaledDepthBias = 0.0f;
-        rasterizerDesc.DepthClipEnable = TRUE;
-        rasterizerDesc.ScissorEnable = FALSE;
-        rasterizerDesc.MultisampleEnable = FALSE;
-        rasterizerDesc.AntialiasedLineEnable = FALSE;
+	{
+		if (!device)
+			return false;
 
-        const HRESULT result = device->CreateRasterizerState(
-            &rasterizerDesc,
-            m_rasterizerState.GetAddressOf()
-        );
+		D3D11_RASTERIZER_DESC rasterizerDesc{};
+		rasterizerDesc.FillMode = D3D11_FILL_SOLID;
+		rasterizerDesc.CullMode = D3D11_CULL_NONE;
+		rasterizerDesc.FrontCounterClockwise = FALSE;
+		rasterizerDesc.DepthBias = 0;
+		rasterizerDesc.DepthBiasClamp = 0.0f;
+		rasterizerDesc.SlopeScaledDepthBias = 0.0f;
+		rasterizerDesc.DepthClipEnable = TRUE;
+		rasterizerDesc.ScissorEnable = FALSE;
+		rasterizerDesc.MultisampleEnable = FALSE;
+		rasterizerDesc.AntialiasedLineEnable = FALSE;
 
-        return SUCCEEDED(result);
-    }
+		const HRESULT rasterizerResult = device->CreateRasterizerState(
+			&rasterizerDesc,
+			m_rasterizerState.GetAddressOf()
+		);
+
+		if (FAILED(rasterizerResult))
+			return false;
+
+		D3D11_DEPTH_STENCIL_DESC skyDepthDesc{};
+		skyDepthDesc.DepthEnable = FALSE;
+		skyDepthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+		skyDepthDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+		skyDepthDesc.StencilEnable = FALSE;
+
+		const HRESULT skyDepthResult = device->CreateDepthStencilState(
+			&skyDepthDesc,
+			m_skyDepthStencilState.GetAddressOf()
+		);
+
+		return SUCCEEDED(skyDepthResult);
+	}
 
     bool Dx11WorldRenderer::UploadAndDraw(
         ID3D11DeviceContext* deviceContext,

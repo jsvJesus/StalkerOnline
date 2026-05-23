@@ -84,6 +84,7 @@ namespace StalkerOnline::Engine
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_cameraConstantBuffer;
 
         Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_rasterizerState;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_skyDepthStencilState;
 
         bool m_initialized = false;
     };
