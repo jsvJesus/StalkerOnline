@@ -1013,7 +1013,10 @@ int WINAPI wWinMain(
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        StalkerOnline::UI::DrawZoneBackground(static_cast<float>(ImGui::GetTime()));
+        if (!g_authenticated.load())
+        {
+            StalkerOnline::UI::DrawZoneBackground(static_cast<float>(ImGui::GetTime()));
+        }
 
         bool loginPressed = false;
         bool registerPressed = false;
