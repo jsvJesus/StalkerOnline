@@ -21,6 +21,10 @@ public sealed class GameServer
     private readonly DatabaseConnectionFactory _databaseConnectionFactory;
     private readonly AccountRepository _accountRepository;
     private readonly AccountService _accountService;
+    
+    private readonly ItemRepository _itemRepository;
+    private readonly InventoryRepository _inventoryRepository;
+    private readonly InventoryService _inventoryService;
 
     private readonly CharacterRepository _characterRepository;
     private readonly CharacterService _characterService;
@@ -89,6 +93,7 @@ public sealed class GameServer
                 tcpClient,
                 _accountService,
                 _characterService,
+                _inventoryService,
                 _gameWorld,
                 _serverConfig.ItemPickupDistance,
                 HandlePlayerJoinedWorldAsync,
@@ -197,6 +202,26 @@ public sealed class GameServer
         }
 
         Console.WriteLine($"[WORLD SAVE] Reason={reason}, SavedPlayers={saved}/{snapshots.Count}");
+
+        List<InventorySnapshot> inventorySnapshots = _gameWorld.CreateInventorySnapshots();
+
+        int savedInventories = 0;
+
+        foreach (InventorySnapshot snapshot in inventorySnapshots)
+        {
+            try
+            {
+                _inventoryService.SaveInventorySnapshot(snapshot);
+                savedInventories++;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"[SAVE INVENTORY ERROR] Reason={reason}, CharacterId={snapshot.CharacterId}, Message={ex.Message}");
+            }
+        }
+
+        Console.WriteLine($"[INVENTORY SAVE] Reason={reason}, SavedInventories={savedInventories}/{inventorySnapshots.Count}");
     }
 
     private async Task HandlePlayerJoinedWorldAsync(ClientSession sourceSession)

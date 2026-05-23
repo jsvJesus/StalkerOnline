@@ -27,7 +27,8 @@ public sealed class WorldPlayer : WorldObject
         PlayerConnection connection,
         float moveSpeed,
         float defaultDeltaTime,
-        float maxDeltaTime)
+        float maxDeltaTime,
+        PlayerInventory inventory)
         : base(
             worldObjectId,
             WorldObjectType.Player,
@@ -47,12 +48,10 @@ public sealed class WorldPlayer : WorldObject
         CharacterId = State.CharacterId;
         Nickname = State.Nickname;
 
-        Inventory = new PlayerInventory(capacity: 30);
+        Inventory = inventory;
 
         SpawnedAtUtc = DateTime.UtcNow;
         LastMovementAtUtc = SpawnedAtUtc;
-
-        AddStarterItems();
     }
 
     public PlayerPositionUpdate ApplyMovement(PlayerMovementInput input)
@@ -145,37 +144,6 @@ public sealed class WorldPlayer : WorldObject
                 IsAlive = State.IsAlive
             };
         }
-    }
-
-    private void AddStarterItems()
-    {
-        Inventory.AddItem(
-            itemTemplateId: "bandage",
-            displayName: "Bandage",
-            quantity: 3,
-            maxStack: 10,
-            weightPerItem: 0.05f);
-
-        Inventory.AddItem(
-            itemTemplateId: "medkit_basic",
-            displayName: "Basic Medkit",
-            quantity: 2,
-            maxStack: 5,
-            weightPerItem: 0.35f);
-
-        Inventory.AddItem(
-            itemTemplateId: "ammo_9x18",
-            displayName: "9x18 Ammo",
-            quantity: 125,
-            maxStack: 60,
-            weightPerItem: 0.01f);
-
-        Inventory.AddItem(
-            itemTemplateId: "water_bottle",
-            displayName: "Bottle of Water",
-            quantity: 2,
-            maxStack: 5,
-            weightPerItem: 0.50f);
     }
 
     private PlayerPositionUpdate CreatePositionUpdateUnsafe()

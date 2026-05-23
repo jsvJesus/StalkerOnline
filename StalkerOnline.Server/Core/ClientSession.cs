@@ -20,6 +20,7 @@ public sealed class ClientSession
     private readonly Func<ClientSession, PlayerPositionUpdate, Task> _onPlayerPositionChanged;
     private readonly Func<ClientSession, Task> _onPlayerLeavingWorld;
     private readonly Action<ClientSession> _onDisconnected;
+    private readonly InventoryService _inventoryService;
 
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly PacketRateLimiter _rateLimiter = new();
@@ -49,6 +50,7 @@ public sealed class ClientSession
         TcpClient client,
         AccountService accountService,
         CharacterService characterService,
+        InventoryService inventoryService,
         GameWorld gameWorld,
         float itemPickupDistance,
         Func<ClientSession, Task> onPlayerJoinedWorld,
@@ -61,6 +63,7 @@ public sealed class ClientSession
         _client = client;
         _accountService = accountService;
         _characterService = characterService;
+        _inventoryService = inventoryService;
         _gameWorld = gameWorld;
         _itemPickupDistance = itemPickupDistance;
         _onPlayerJoinedWorld = onPlayerJoinedWorld;
@@ -235,6 +238,7 @@ public sealed class ClientSession
         Login = result.Login;
 
         PlayerState playerState = _characterService.LoadOrCreatePlayerState(AccountId, Login);
+        PlayerInventory playerInventory = _inventoryService.LoadOrCreatePlayerInventory(playerState.CharacterId);
 
         PlayerConnection = new PlayerConnection(
             SessionId,
@@ -242,7 +246,7 @@ public sealed class ClientSession
             Login,
             playerState);
 
-        _gameWorld.AddPlayer(PlayerConnection);
+        _gameWorld.AddPlayer(PlayerConnection, playerInventory);
 
         Console.WriteLine($"[LOGIN SUCCESS] SessionId={SessionId}, AccountId={AccountId}, Login={Login}");
         Console.WriteLine($"[PLAYER CREATED] SessionId={SessionId}, CharacterId={playerState.CharacterId}, Nickname={playerState.Nickname}");
@@ -400,6 +404,11 @@ public sealed class ClientSession
 
         await SendServerMessageAsync(
             $"Picked up: {result.DisplayName} x{result.Quantity}");
+        
+        InventorySnapshot? inventorySnapshot = _gameWorld.CreateInventorySnapshot(SessionId);
+
+        if (inventorySnapshot != null)
+            _inventoryService.SaveInventorySnapshot(inventorySnapshot);
 
         await SendInventorySnapshotAsync();
 
@@ -548,6 +557,19 @@ public sealed class ClientSession
         {
             Console.WriteLine(
                 $"[CHARACTER SAVE ERROR] SessionId={SessionId}, AccountId={AccountId}, Message={ex.Message}");
+        }
+        
+        try
+        {
+            InventorySnapshot? inventorySnapshot = _gameWorld.CreateInventorySnapshot(SessionId);
+
+            if (inventorySnapshot != null)
+                _inventoryService.SaveInventorySnapshot(inventorySnapshot);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(
+                $"[INVENTORY SAVE ERROR] SessionId={SessionId}, AccountId={AccountId}, Message={ex.Message}");
         }
 
         await _onPlayerLeavingWorld(this);

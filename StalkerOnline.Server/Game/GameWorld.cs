@@ -27,7 +27,7 @@ public sealed class GameWorld
         _maxDeltaTime = maxDeltaTime;
     }
 
-    public WorldPlayer AddPlayer(PlayerConnection connection)
+    public WorldPlayer AddPlayer(PlayerConnection connection, PlayerInventory inventory)
     {
         int worldObjectId = CreateWorldObjectId();
 
@@ -36,7 +36,8 @@ public sealed class GameWorld
             connection,
             _moveSpeed,
             _defaultDeltaTime,
-            _maxDeltaTime);
+            _maxDeltaTime,
+            inventory);
 
         _playersBySessionId.AddOrUpdate(
             connection.SessionId,
@@ -92,6 +93,18 @@ public sealed class GameWorld
         foreach (WorldPlayer player in _playersBySessionId.Values)
         {
             snapshots.Add(player.CreateStateSnapshot());
+        }
+
+        return snapshots;
+    }
+    
+    public List<InventorySnapshot> CreateInventorySnapshots()
+    {
+        List<InventorySnapshot> snapshots = new();
+
+        foreach (WorldPlayer player in _playersBySessionId.Values)
+        {
+            snapshots.Add(player.CreateInventorySnapshot());
         }
 
         return snapshots;

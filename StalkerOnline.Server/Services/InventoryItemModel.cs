@@ -18,6 +18,9 @@ public sealed class InventoryItemModel
     public int Width { get; set; } = 1;
     public int Height { get; set; } = 1;
 
+    public int MaxStack { get; set; } = 1;
+    public float WeightPerItem { get; set; }
+
     public float Durability { get; set; } = 100f;
 
     public DateTime CreatedAtUtc { get; set; }
