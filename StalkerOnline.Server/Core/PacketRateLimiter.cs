@@ -50,6 +50,14 @@ public sealed class PacketRateLimiter
                 disconnectOnLimit: false)
         },
         {
+            PacketType.DropItemRequest,
+            new PacketRateRule(
+                PacketType.DropItemRequest,
+                maxPackets: 10,
+                window: TimeSpan.FromSeconds(1),
+                disconnectOnLimit: false)
+        },
+        {
             PacketType.Ping,
             new PacketRateRule(
                 PacketType.Ping,

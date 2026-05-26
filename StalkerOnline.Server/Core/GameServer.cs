@@ -101,10 +101,11 @@ public sealed class GameServer
                 _gameWorld,
                 _serverConfig.ItemPickupDistance,
                 HandlePlayerJoinedWorldAsync,
-                BroadcastPlayerPositionAsync,
-                BroadcastWorldItemPickedUpAsync,
-                BroadcastPlayerDespawnAsync,
-                RemoveSession);
+				BroadcastPlayerPositionAsync,
+				BroadcastWorldItemPickedUpAsync,
+				BroadcastWorldItemDroppedAsync,
+				BroadcastPlayerDespawnAsync,
+				RemoveSession);
 
             if (!_sessions.TryAdd(sessionId, session))
             {
@@ -607,6 +608,35 @@ public sealed class GameServer
                 $"[WORLD ITEM PICKUP BROADCAST] PickerSessionId={pickerSession.SessionId}, WorldObjectId={pickupResult.WorldObjectId}, Observers={sendTasks.Count}");
         }
     }
+
+	private async Task BroadcastWorldItemDroppedAsync(
+    	ClientSession dropperSession,
+    	WorldItemDropResult dropResult)
+	{
+    	if (!dropResult.IsSuccess)
+        	return;
+
+    	List<Task> updateTasks = new();
+
+    	foreach (ClientSession observerSession in _sessions.Values)
+    	{
+        	if (observerSession.IsClosed)
+            	continue;
+
+        	if (!observerSession.IsAuthorized || observerSession.PlayerConnection == null)
+            	continue;
+
+        	updateTasks.Add(UpdateWorldItemInterestAsync(observerSession));
+    	}
+
+    	if (updateTasks.Count > 0)
+    	{
+        	await Task.WhenAll(updateTasks);
+
+        	Console.WriteLine(
+            	$"[WORLD ITEM DROP BROADCAST] DropperSessionId={dropperSession.SessionId}, WorldObjectId={dropResult.WorldObjectId}, Name={dropResult.DisplayName}, Quantity={dropResult.Quantity}, CheckedObservers={updateTasks.Count}");
+    	}
+	}
 
     private async Task BroadcastPlayerDespawnAsync(ClientSession sourceSession)
     {

@@ -16,6 +16,7 @@ public sealed class ClientSession
     private readonly GameWorld _gameWorld;
     private readonly float _itemPickupDistance;
     private readonly Func<ClientSession, WorldItemPickupResult, Task> _onWorldItemPickedUp;
+    private readonly Func<ClientSession, WorldItemDropResult, Task> _onWorldItemDropped;
     private readonly Func<ClientSession, Task> _onPlayerJoinedWorld;
     private readonly Func<ClientSession, PlayerPositionUpdate, Task> _onPlayerPositionChanged;
     private readonly Func<ClientSession, Task> _onPlayerLeavingWorld;
@@ -56,6 +57,7 @@ public sealed class ClientSession
         Func<ClientSession, Task> onPlayerJoinedWorld,
         Func<ClientSession, PlayerPositionUpdate, Task> onPlayerPositionChanged,
         Func<ClientSession, WorldItemPickupResult, Task> onWorldItemPickedUp,
+        Func<ClientSession, WorldItemDropResult, Task> onWorldItemDropped,
         Func<ClientSession, Task> onPlayerLeavingWorld,
         Action<ClientSession> onDisconnected)
     {
@@ -69,6 +71,7 @@ public sealed class ClientSession
         _onPlayerJoinedWorld = onPlayerJoinedWorld;
         _onPlayerPositionChanged = onPlayerPositionChanged;
         _onWorldItemPickedUp = onWorldItemPickedUp;
+        _onWorldItemDropped = onWorldItemDropped;
         _onPlayerLeavingWorld = onPlayerLeavingWorld;
         _onDisconnected = onDisconnected;
 
@@ -172,6 +175,10 @@ public sealed class ClientSession
             
             case PacketType.PickupItemRequest:
                 await HandlePickupItemRequestAsync(packet);
+                break;
+            
+            case PacketType.DropItemRequest:
+                await HandleDropItemRequestAsync(packet);
                 break;
 
             case PacketType.Disconnect:
@@ -414,6 +421,74 @@ public sealed class ClientSession
 
         await _onWorldItemPickedUp(this, result);
     }
+    
+    private async Task HandleDropItemRequestAsync(PacketMessage packet)
+    {
+        if (!IsAuthorized || PlayerConnection == null)
+        {
+            Console.WriteLine($"[DROP IGNORED] SessionId={SessionId}, Reason=Not authorized");
+
+            DropItemResponse notAuthorizedResponse = new()
+            {
+                IsSuccess = false,
+                WorldObjectId = 0,
+                SlotIndex = -1,
+                Message = "You must login before drop items."
+            };
+
+            await SendDropItemResponseAsync(notAuthorizedResponse);
+
+            return;
+        }
+
+        PacketReader reader = new(packet.Payload);
+        DropItemRequest request = DropItemSerializer.ReadRequest(reader);
+
+        Console.WriteLine(
+            $"[DROP REQUEST] SessionId={SessionId}, CharacterId={PlayerConnection.State.CharacterId}, Slot={request.SlotIndex}, Quantity={request.Quantity}");
+
+        WorldItemDropResult result = _gameWorld.TryDropItem(
+            SessionId,
+            request.SlotIndex,
+            request.Quantity);
+
+        DropItemResponse response = new()
+        {
+            IsSuccess = result.IsSuccess,
+
+            WorldObjectId = result.WorldObjectId,
+            SlotIndex = result.SlotIndex,
+
+            ItemTemplateId = result.ItemTemplateId,
+            DisplayName = result.DisplayName,
+
+            Quantity = result.Quantity,
+
+            Message = result.Message
+        };
+
+        await SendDropItemResponseAsync(response);
+
+        if (!result.IsSuccess)
+        {
+            Console.WriteLine(
+                $"[DROP FAILED] SessionId={SessionId}, Slot={request.SlotIndex}, Quantity={request.Quantity}, Reason={result.Message}");
+
+            return;
+        }
+
+        await SendServerMessageAsync(
+            $"Dropped: {result.DisplayName} x{result.Quantity}");
+
+        InventorySnapshot? inventorySnapshot = _gameWorld.CreateInventorySnapshot(SessionId);
+
+        if (inventorySnapshot != null)
+            _inventoryService.SaveInventorySnapshot(inventorySnapshot);
+
+        await SendInventorySnapshotAsync();
+
+        await _onWorldItemDropped(this, result);
+    }
 
     private async Task SendPlayerStateSnapshotAsync()
     {
@@ -455,6 +530,14 @@ public sealed class ClientSession
         PickupItemSerializer.WriteResponse(writer, response);
 
         await SendPacketAsync(PacketType.PickupItemResponse, writer.ToArray());
+    }
+    
+    private async Task SendDropItemResponseAsync(DropItemResponse response)
+    {
+        PacketWriter writer = new();
+        DropItemSerializer.WriteResponse(writer, response);
+    
+        await SendPacketAsync(PacketType.DropItemResponse, writer.ToArray());
     }
 
     public async Task SendPingAsync()
