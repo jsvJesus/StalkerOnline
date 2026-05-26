@@ -262,7 +262,57 @@ public sealed class PlayerInventory
             return requiredNewSlots <= freeSlots;
         }
     }
+    
+    public InventoryItem? TakeItemFromSlot(
+        int slotIndex,
+        int quantity,
+        out string errorMessage)
+    {
+        errorMessage = string.Empty;
 
+        if (slotIndex < 0 || slotIndex >= Capacity)
+        {
+            errorMessage = "Invalid inventory slot.";
+            return null;
+        }
+
+        if (quantity <= 0)
+        {
+            errorMessage = "Quantity must be greater than zero.";
+            return null;
+        }
+
+        lock (_lock)
+        {
+            InventoryItem? item = _items.FirstOrDefault(x => x.SlotIndex == slotIndex);
+
+            if (item == null)
+            {
+                errorMessage = "Inventory slot is empty.";
+                return null;
+            }
+
+            int takenQuantity = Math.Min(quantity, item.Quantity);
+
+            if (takenQuantity <= 0)
+            {
+                errorMessage = "Item quantity is invalid.";
+                return null;
+            }
+
+            InventoryItem takenItem = item.Clone();
+            takenItem.Quantity = takenQuantity;
+
+            item.Quantity -= takenQuantity;
+
+            if (item.Quantity <= 0)
+                _items.Remove(item);
+
+            errorMessage = "Item removed from inventory.";
+            return takenItem;
+        }
+    }
+    
     public InventorySnapshot CreateSnapshot(int characterId)
     {
         lock (_lock)

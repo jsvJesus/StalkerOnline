@@ -464,6 +464,83 @@ public sealed class GameWorld
         };
     }
     
+    public WorldItemDropResult TryDropItem(
+    int dropperSessionId,
+    int slotIndex,
+    int quantity)
+    {
+        if (!_playersBySessionId.TryGetValue(dropperSessionId, out WorldPlayer? player))
+        {
+            return WorldItemDropResult.Fail(
+                dropperSessionId,
+                slotIndex,
+                "Player was not found in world.");
+        }
+
+        if (!player.State.IsAlive)
+        {
+            return WorldItemDropResult.Fail(
+                dropperSessionId,
+                slotIndex,
+                "Dead player cannot drop items.");
+        }
+
+        InventoryItem? droppedInventoryItem = player.Inventory.TakeItemFromSlot(
+            slotIndex,
+            quantity,
+            out string errorMessage);
+
+        if (droppedInventoryItem == null)
+        {
+            return WorldItemDropResult.Fail(
+                dropperSessionId,
+                slotIndex,
+                errorMessage);
+        }
+
+        NetVector3 playerPosition = player.GetPosition();
+
+        float yawRadians = player.State.Rotation.Z * MathF.PI / 180.0f;
+
+        float forwardX = MathF.Sin(yawRadians);
+        float forwardY = MathF.Cos(yawRadians);
+
+        NetVector3 dropPosition = new(
+            playerPosition.X + forwardX * 1.25f,
+            playerPosition.Y + forwardY * 1.25f,
+            playerPosition.Z);
+
+        WorldItem worldItem = SpawnWorldItem(
+            droppedInventoryItem.ItemTemplateId,
+            droppedInventoryItem.DisplayName,
+            droppedInventoryItem.Quantity,
+            dropPosition,
+            player.State.Rotation,
+            droppedInventoryItem.MaxStack,
+            droppedInventoryItem.WeightPerItem);
+
+        Console.WriteLine(
+            $"[WORLD ITEM DROPPED] SessionId={player.SessionId}, CharacterId={player.CharacterId}, Slot={slotIndex}, WorldObjectId={worldItem.WorldObjectId}, TemplateId={worldItem.ItemTemplateId}, Name={worldItem.DisplayName}, Quantity={worldItem.Quantity}");
+
+        return new WorldItemDropResult
+        {
+            IsSuccess = true,
+
+            DropperSessionId = player.SessionId,
+            DropperCharacterId = player.CharacterId,
+
+            WorldObjectId = worldItem.WorldObjectId,
+            SlotIndex = slotIndex,
+
+            ItemTemplateId = worldItem.ItemTemplateId,
+            DisplayName = worldItem.DisplayName,
+
+            Quantity = worldItem.Quantity,
+
+            Message = "Item dropped."
+        };
+    }
+    
     public InventoryAddResult? AddItemToPlayer(
         int sessionId,
         string itemTemplateId,
