@@ -765,6 +765,33 @@ namespace
         SetStatus("Pickup request sent. WorldObjectId=" + std::to_string(worldObjectId));
     }
 
+    void DropInventoryItem(int32_t slotIndex, int32_t quantity)
+    {
+        if (slotIndex < 0)
+        {
+            SetStatus("Drop failed: invalid inventory slot");
+            return;
+        }
+
+        if (quantity <= 0)
+            quantity = 1;
+
+        if (!g_client || !g_client->IsConnected())
+        {
+            SetStatus("Drop failed: not connected");
+            return;
+        }
+
+        g_client->SendDropItemRequest(slotIndex, quantity);
+
+        SetStatus(
+            "Drop request sent. Slot=" +
+            std::to_string(slotIndex) +
+            ", Quantity=" +
+            std::to_string(quantity)
+        );
+    }
+
     void ToggleCameraMode()
     {
         if (g_cameraMode == StalkerOnline::Engine::GameCameraMode::ThirdPerson)
@@ -854,6 +881,9 @@ namespace
             if (ImGui::IsKeyPressed(ImGuiKey_F))
                 PickupWorldItem(g_gameScreenState.SelectedWorldItemId);
 
+            if (ImGui::IsKeyPressed(ImGuiKey_G))
+                DropInventoryItem(g_gameScreenState.SelectedInventorySlotIndex, 1);
+
             if (ImGui::IsKeyDown(ImGuiKey_Q))
             {
                 g_rotationZ = NormalizeRotationZ(
@@ -942,6 +972,9 @@ namespace
 
         if (actions.PickupPressed)
             PickupWorldItem(actions.PickupWorldObjectId);
+
+        if (actions.DropPressed)
+            DropInventoryItem(actions.DropSlotIndex, actions.DropQuantity);
 
         if (actions.DisconnectPressed)
             RunDisconnect();

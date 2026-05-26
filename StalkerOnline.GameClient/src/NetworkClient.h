@@ -135,6 +135,7 @@ public:
         float deltaTime = 0.10f);
 
     bool SendPickupItemRequest(int32_t worldObjectId);
+    bool SendDropItemRequest(int32_t slotIndex, int32_t quantity);
 
     void StartReceiveLoop();
     void Stop();
@@ -161,6 +162,7 @@ private:
     void HandleWorldItemSpawn(const PacketMessage& message);
     void HandleWorldItemDespawn(const PacketMessage& message);
     void HandlePickupItemResponse(const PacketMessage& message);
+    void HandleDropItemResponse(const PacketMessage& message);
 
     void NotifyStateChanged();
 

@@ -101,6 +101,7 @@ namespace StalkerOnline::UI
         std::vector<WorldItemUi> WorldItems;
 
         int32_t SelectedWorldItemId = 0;
+        int32_t SelectedInventorySlotIndex = -1;
 
         char StatusText[256] = "Ready";
     };
@@ -117,6 +118,10 @@ namespace StalkerOnline::UI
 
         bool PickupPressed = false;
         int32_t PickupWorldObjectId = 0;
+
+        bool DropPressed = false;
+        int32_t DropSlotIndex = -1;
+        int32_t DropQuantity = 1;
 
         bool DisconnectPressed = false;
     };

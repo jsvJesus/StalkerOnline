@@ -257,6 +257,36 @@ bool NetworkClient::SendPickupItemRequest(int32_t worldObjectId)
     return sent;
 }
 
+bool NetworkClient::SendDropItemRequest(int32_t slotIndex, int32_t quantity)
+{
+    if (slotIndex < 0)
+    {
+        Log(L"[DROP REQUEST] Invalid slot index.");
+        return false;
+    }
+
+    if (quantity <= 0)
+        quantity = 1;
+
+    PacketWriter writer;
+    writer.WriteInt32(slotIndex);
+    writer.WriteInt32(quantity);
+
+    bool sent = SendPacket(PacketType::DropItemRequest, writer.Data());
+
+    if (sent)
+    {
+        std::wstringstream ss;
+        ss
+            << L"[DROP REQUEST] SlotIndex=" << slotIndex
+            << L", Quantity=" << quantity;
+
+        Log(ss.str());
+    }
+
+    return sent;
+}
+
 void NetworkClient::StartReceiveLoop()
 {
     if (!_connected)
@@ -543,6 +573,12 @@ void NetworkClient::HandlePacket(const PacketMessage& message)
             break;
         }
 
+        case PacketType::DropItemResponse:
+        {
+            HandleDropItemResponse(message);
+            break;
+        }
+
         default:
         {
             Log(L"[PACKET] Type=" + PacketTypeToText(message.Type));
@@ -745,6 +781,34 @@ void NetworkClient::HandlePickupItemResponse(const PacketMessage& message)
     ss
         << L"[PICKUP RESPONSE] Success=" << (success ? L"true" : L"false")
         << L", Id=" << worldObjectId
+        << L", Name=" << Utf8ToWide(displayName)
+        << L", Qty=" << quantity
+        << L", Message=" << Utf8ToWide(responseMessage);
+
+    Log(ss.str());
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandleDropItemResponse(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+
+    bool success = reader.ReadBool();
+
+    int32_t worldObjectId = reader.ReadInt32();
+    int32_t slotIndex = reader.ReadInt32();
+
+    std::string itemTemplateId = reader.ReadString();
+    std::string displayName = reader.ReadString();
+
+    int32_t quantity = reader.ReadInt32();
+    std::string responseMessage = reader.ReadString();
+
+    std::wstringstream ss;
+    ss
+        << L"[DROP RESPONSE] Success=" << (success ? L"true" : L"false")
+        << L", WorldObjectId=" << worldObjectId
+        << L", Slot=" << slotIndex
         << L", Name=" << Utf8ToWide(displayName)
         << L", Qty=" << quantity
         << L", Message=" << Utf8ToWide(responseMessage);

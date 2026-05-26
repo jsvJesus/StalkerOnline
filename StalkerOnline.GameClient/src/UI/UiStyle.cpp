@@ -723,9 +723,10 @@ namespace StalkerOnline::UI
         return false;
     }
 
-    static void DrawRealInventorySlot(
+    static bool DrawRealInventorySlot(
         const InventoryItemUi* item,
-        int32_t slotIndex
+        int32_t slotIndex,
+        bool selected
     )
     {
         ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -735,20 +736,29 @@ namespace StalkerOnline::UI
 
         const bool hasItem = item != nullptr;
 
+        ImU32 bgColor = hasItem ? U32(45, 47, 36, 245) : U32(17, 18, 15, 235);
+        ImU32 borderColor = hasItem ? U32(163, 132, 66, 235) : U32(67, 61, 46, 190);
+
+        if (selected)
+        {
+            bgColor = U32(70, 62, 38, 255);
+            borderColor = U32(235, 185, 70, 255);
+        }
+
         drawList->AddRectFilled(
             pos,
             ImVec2(pos.x + slotSize, pos.y + slotSize),
-            hasItem ? U32(45, 47, 36, 245) : U32(17, 18, 15, 235),
+            bgColor,
             2.0f
         );
 
         drawList->AddRect(
             pos,
             ImVec2(pos.x + slotSize, pos.y + slotSize),
-            hasItem ? U32(163, 132, 66, 235) : U32(67, 61, 46, 190),
+            borderColor,
             2.0f,
             0,
-            1.0f
+            selected ? 2.0f : 1.0f
         );
 
         char slotText[32];
@@ -792,6 +802,11 @@ namespace StalkerOnline::UI
 
         ImGui::InvisibleButton("##InventorySlot", ImVec2(slotSize, slotSize));
 
+        bool clicked = false;
+
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+            clicked = true;
+
         if (hasItem && ImGui::IsItemHovered())
         {
             ImGui::BeginTooltip();
@@ -801,14 +816,25 @@ namespace StalkerOnline::UI
             ImGui::Text("Slot: %d", item->SlotIndex);
             ImGui::Text("Quantity: %d / %d", item->Quantity, item->MaxStack);
             ImGui::Text("Weight: %.2f", item->WeightPerItem);
+            ImGui::TextColored(ColorFromBytes(180, 160, 95), "Left click: select slot");
             ImGui::EndTooltip();
         }
+
+        return clicked;
     }
 
-    static void DrawInventoryGrid(const InventorySnapshotUi& inventory)
+    static void DrawInventoryGrid(
+        GameScreenState& state,
+        GameScreenActions& actions
+    )
     {
+        const InventorySnapshotUi& inventory = state.Inventory;
+
         const int32_t capacity = inventory.Capacity > 0 ? inventory.Capacity : 20;
         constexpr int32_t columns = 5;
+
+        if (state.SelectedInventorySlotIndex >= capacity)
+            state.SelectedInventorySlotIndex = -1;
 
         ImGui::BeginChild(
             "##InventoryGridChild",
@@ -822,7 +848,15 @@ namespace StalkerOnline::UI
             ImGui::PushID(slot);
 
             const InventoryItemUi* item = FindInventoryItemAtSlot(inventory, slot);
-            DrawRealInventorySlot(item, slot);
+            const bool selected = state.SelectedInventorySlotIndex == slot;
+
+            if (DrawRealInventorySlot(item, slot, selected))
+            {
+                if (item != nullptr)
+                    state.SelectedInventorySlotIndex = slot;
+                else if (selected)
+                    state.SelectedInventorySlotIndex = -1;
+            }
 
             ImGui::PopID();
 
@@ -831,6 +865,40 @@ namespace StalkerOnline::UI
         }
 
         ImGui::EndChild();
+
+        const InventoryItemUi* selectedItem = nullptr;
+
+        if (state.SelectedInventorySlotIndex >= 0)
+            selectedItem = FindInventoryItemAtSlot(inventory, state.SelectedInventorySlotIndex);
+
+        ImGui::Dummy(ImVec2(1.0f, 6.0f));
+
+        if (selectedItem != nullptr)
+        {
+            ImGui::TextColored(
+                ColorFromBytes(226, 194, 105),
+                "Selected: slot %d | %s x%d",
+                selectedItem->SlotIndex,
+                selectedItem->DisplayName.c_str(),
+                selectedItem->Quantity
+            );
+        }
+        else
+        {
+            ImGui::TextColored(
+                ColorFromBytes(130, 126, 108),
+                "Selected: none"
+            );
+        }
+
+        const bool canDrop = selectedItem != nullptr;
+
+        if (StalkerButton("DROP SELECTED ITEM", ImVec2(-1.0f, 34.0f), true, !canDrop))
+        {
+            actions.DropPressed = true;
+            actions.DropSlotIndex = state.SelectedInventorySlotIndex;
+            actions.DropQuantity = 1;
+        }
     }
 
     static void DrawWorldItemsList(
@@ -1024,7 +1092,7 @@ namespace StalkerOnline::UI
 
                 ImGui::Dummy(ImVec2(1.0f, 6.0f));
 
-                DrawInventoryGrid(state.Inventory);
+                DrawInventoryGrid(state, actions);
             }
         }
 
@@ -1047,7 +1115,7 @@ namespace StalkerOnline::UI
             controlsPanelSize
         ))
         {
-            ImGui::TextColored(ColorFromBytes(151, 143, 113), "Movement: W/A/S/D | Rotate: Q/E | Camera: C | F pickup");
+            ImGui::TextColored(ColorFromBytes(151, 143, 113), "Movement: W/A/S/D | Rotate: Q/E | Camera: C | F pickup | G drop");
 
             ImGui::Dummy(ImVec2(1.0f, 6.0f));
 
