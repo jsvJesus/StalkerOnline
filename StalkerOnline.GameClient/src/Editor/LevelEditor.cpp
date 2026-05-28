@@ -88,6 +88,10 @@ namespace
     float g_timeOfDay = 12.0f;
     float g_editorSpeed = 5.0f;
 
+    float g_terrainWorldSizeMetersX = 512.0f;
+    float g_terrainWorldSizeMetersY = 512.0f;
+    bool g_lockTerrainWorldSize = true;
+
     float g_heightMin = 0.0f;
     float g_heightMax = 1.0f;
 
@@ -354,6 +358,75 @@ namespace
             g_renderSettings.HeightScale);
     }
 
+    void SyncTerrainWorldSizeFromSettings()
+    {
+        const int width = g_heightmap.IsValid() ? g_heightmap.GetWidth() : g_rawWidth;
+        const int height = g_heightmap.IsValid() ? g_heightmap.GetHeight() : g_rawHeight;
+
+        if (width > 1)
+            g_terrainWorldSizeMetersX =
+                (static_cast<float>(width - 1) * g_renderSettings.CellSizeX) / 100.0f;
+
+        if (height > 1)
+            g_terrainWorldSizeMetersY =
+                (static_cast<float>(height - 1) * g_renderSettings.CellSizeY) / 100.0f;
+    }
+
+    void ApplyTerrainWorldSizeMeters()
+    {
+        const int width = g_heightmap.IsValid() ? g_heightmap.GetWidth() : g_rawWidth;
+        const int height = g_heightmap.IsValid() ? g_heightmap.GetHeight() : g_rawHeight;
+
+        if (width <= 1 || height <= 1)
+        {
+            SetStatus("Apply world size failed: invalid terrain size.");
+            return;
+        }
+
+        g_terrainWorldSizeMetersX = std::clamp(g_terrainWorldSizeMetersX, 1.0f, 100000.0f);
+
+        if (g_lockTerrainWorldSize)
+            g_terrainWorldSizeMetersY = g_terrainWorldSizeMetersX;
+
+        g_terrainWorldSizeMetersY = std::clamp(g_terrainWorldSizeMetersY, 1.0f, 100000.0f);
+
+        g_renderSettings.CellSizeX =
+            (g_terrainWorldSizeMetersX * 100.0f) / static_cast<float>(width - 1);
+
+        g_renderSettings.CellSizeY =
+            (g_terrainWorldSizeMetersY * 100.0f) / static_cast<float>(height - 1);
+
+        SyncSceneTerrainInfo();
+
+        if (g_heightmap.IsValid())
+            ResetCameraToHeightmap();
+
+        g_isDirty = true;
+
+        SetStatus(
+            "Applied terrain world size: " +
+            std::to_string(g_terrainWorldSizeMetersX) +
+            "m x " +
+            std::to_string(g_terrainWorldSizeMetersY) +
+            "m.");
+    }
+
+    void ReloadRawWithManualSize()
+    {
+        if (g_rawPath[0] == '\0')
+        {
+            SetStatus("Reload failed: RAW path is empty.");
+            return;
+        }
+
+        g_autoDetectSquareSize = false;
+
+        g_rawWidth = std::clamp(g_rawWidth, 2, 8192);
+        g_rawHeight = std::clamp(g_rawHeight, 2, 8192);
+
+        LoadRawHeightmap(g_rawPath);
+    }
+
     void SaveLevelFile(const std::string& path)
     {
         if (path.empty())
@@ -363,6 +436,7 @@ namespace
         }
 
         SyncSceneTerrainInfo();
+        SyncTerrainWorldSizeFromSettings();
 
         std::string errorMessage;
 
@@ -630,6 +704,7 @@ namespace
             850.0f);
 
         SyncSceneTerrainInfo();
+        SyncTerrainWorldSizeFromSettings();
 
         g_isDirty = true;
 
@@ -666,6 +741,7 @@ namespace
         ResetCameraToHeightmap();
         g_isDirty = false;
         SyncSceneTerrainInfo();
+        SyncTerrainWorldSizeFromSettings();
 
         SetStatus("Loaded RAW heightmap: " + path);
     }
@@ -1265,8 +1341,12 @@ namespace
 
         ImGui::Separator();
 
-        ImGui::InputInt("Width", &g_rawWidth);
-        ImGui::InputInt("Height", &g_rawHeight);
+        ImGui::TextColored(
+            ImVec4(0.74f, 0.70f, 0.52f, 1.0f),
+            "RAW pixel size. Change it before reload/import.");
+
+        ImGui::InputInt("RAW Width", &g_rawWidth);
+        ImGui::InputInt("RAW Height", &g_rawHeight);
         g_rawWidth = std::clamp(g_rawWidth, 2, 8192);
         g_rawHeight = std::clamp(g_rawHeight, 2, 8192);
 
@@ -1279,15 +1359,70 @@ namespace
         };
 
         ImGui::Combo("RAW format", &g_rawFormatIndex, formats, IM_ARRAYSIZE(formats));
+
         ImGui::Checkbox("Auto square size", &g_autoDetectSquareSize);
+
+        if (g_autoDetectSquareSize)
+        {
+            ImGui::TextColored(
+                ImVec4(0.92f, 0.68f, 0.22f, 1.0f),
+                "Auto size is ON: manual RAW Width/Height will be overwritten on load.");
+        }
 
         if (ImGui::Button("Detect Size From File"))
             AutoDetectRawDimensions(g_rawPath, true);
 
+        ImGui::SameLine();
+
+        if (ImGui::Button("Apply RAW Size + Reload"))
+            ReloadRawWithManualSize();
+
         ImGui::Separator();
 
-        ImGui::DragFloat("Scale X", &g_renderSettings.CellSizeX, 0.1f, 0.01f, 10000.0f, "%.6f");
-        ImGui::DragFloat("Scale Y", &g_renderSettings.CellSizeY, 0.1f, 0.01f, 10000.0f, "%.6f");
+        ImGui::TextColored(
+            ImVec4(0.74f, 0.70f, 0.52f, 1.0f),
+            "World size changes visual/editor size, not RAW pixel count.");
+
+        if (ImGui::Checkbox("Lock X/Y world size", &g_lockTerrainWorldSize))
+        {
+            if (g_lockTerrainWorldSize)
+                g_terrainWorldSizeMetersY = g_terrainWorldSizeMetersX;
+        }
+
+        if (ImGui::DragFloat("World X meters", &g_terrainWorldSizeMetersX, 1.0f, 1.0f, 100000.0f, "%.2f"))
+        {
+            if (g_lockTerrainWorldSize)
+                g_terrainWorldSizeMetersY = g_terrainWorldSizeMetersX;
+        }
+
+        if (ImGui::DragFloat("World Y meters", &g_terrainWorldSizeMetersY, 1.0f, 1.0f, 100000.0f, "%.2f"))
+        {
+            if (g_lockTerrainWorldSize)
+                g_terrainWorldSizeMetersX = g_terrainWorldSizeMetersY;
+        }
+
+        if (ImGui::Button("Apply World Size"))
+            ApplyTerrainWorldSizeMeters();
+
+        ImGui::Separator();
+
+        ImGui::TextColored(
+            ImVec4(0.74f, 0.70f, 0.52f, 1.0f),
+            "Advanced cell size.");
+
+        if (ImGui::DragFloat("Cell X cm", &g_renderSettings.CellSizeX, 0.1f, 0.01f, 10000.0f, "%.6f"))
+        {
+            SyncTerrainWorldSizeFromSettings();
+            SyncSceneTerrainInfo();
+            g_isDirty = true;
+        }
+
+        if (ImGui::DragFloat("Cell Y cm", &g_renderSettings.CellSizeY, 0.1f, 0.01f, 10000.0f, "%.6f"))
+        {
+            SyncTerrainWorldSizeFromSettings();
+            SyncSceneTerrainInfo();
+            g_isDirty = true;
+        }
 
         if (ImGui::DragFloat("UE Z scale", &g_ueZScale, 0.01f, 0.001f, 10000.0f, "%.6f"))
             g_renderSettings.HeightScale = g_ueZScale * 512.0f;
