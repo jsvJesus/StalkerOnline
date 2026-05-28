@@ -36,7 +36,11 @@ namespace StalkerOnline::Editor
 
         bool NormalizeHeightPreview = true;
         bool ShowBrush = false;
-        bool ShowWireframe = true;
+
+        bool ShowWireframe = false;
+        bool ShowDebugGrid = false;
+        bool ShowObjectWireframe = true;
+        bool ShowWater = false;
     };
 
     class Dx11LevelEditorRenderer final

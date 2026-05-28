@@ -80,6 +80,8 @@ namespace
     bool g_showMapPanel = false;
     bool g_showShadowsPanel = false;
     bool g_showMiscPanel = false;
+    bool g_isCameraLookActive = false;
+    POINT g_lastMousePosition{};
 
     float g_cameraZNear = 0.10f;
     float g_cameraZFar = 3000.0f;
@@ -437,8 +439,21 @@ namespace
             return;
         }
 
+        g_renderSettings.ShowWireframe = false;
+        g_renderSettings.ShowDebugGrid = false;
+        g_renderSettings.ShowObjectWireframe = true;
+        g_renderSettings.ShowWater = false;
+
         RefreshHeightStats();
-        ResetCameraToHeightmap();
+
+        g_renderSettings.CameraX = 0.0f;
+        g_renderSettings.CameraY = 8500.0f;
+        g_renderSettings.CameraZ = -14500.0f;
+        g_renderSettings.CameraYaw = 0.0f;
+        g_renderSettings.CameraPitch = -38.0f;
+        g_renderSettings.CameraSpeed = 7000.0f;
+        g_editorSpeed = 5.0f;
+
         g_isDirty = true;
         g_editorScene.Clear();
         SyncSceneTerrainInfo();
@@ -490,9 +505,18 @@ namespace
     {
         g_rawWidth = 513;
         g_rawHeight = 513;
+
         g_renderSettings.CellSizeX = 100.0f;
         g_renderSettings.CellSizeY = 100.0f;
         g_renderSettings.HeightScale = 9000.0f;
+        g_renderSettings.MaxRenderedCellsPerAxis = 256;
+
+        g_renderSettings.NormalizeHeightPreview = true;
+        g_renderSettings.ShowWireframe = false;
+        g_renderSettings.ShowDebugGrid = false;
+        g_renderSettings.ShowObjectWireframe = true;
+        g_renderSettings.ShowWater = false;
+
         g_ueZScale = g_renderSettings.HeightScale / 512.0f;
 
         std::string errorMessage;
@@ -546,7 +570,14 @@ namespace
         g_editorScene.Clear();
 
         RefreshHeightStats();
-        ResetCameraToHeightmap();
+
+        g_renderSettings.CameraX = 0.0f;
+        g_renderSettings.CameraY = 18000.0f;
+        g_renderSettings.CameraZ = -32000.0f;
+        g_renderSettings.CameraYaw = 0.0f;
+        g_renderSettings.CameraPitch = -28.0f;
+        g_renderSettings.CameraSpeed = 10000.0f;
+        g_editorSpeed = 5.0f;
 
         for (int i = 0; i < 40; ++i)
         {
@@ -755,6 +786,162 @@ namespace
         return Normalize(Cross(CameraForward(), CameraRight()));
     }
 
+    bool IsTextInputActive()
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        return io.WantTextInput;
+    }
+
+    void CenterMouseToWindow()
+    {
+        if (g_windowHandle == nullptr)
+            return;
+
+        RECT clientRect{};
+        GetClientRect(g_windowHandle, &clientRect);
+
+        POINT center{};
+        center.x = (clientRect.right - clientRect.left) / 2;
+        center.y = (clientRect.bottom - clientRect.top) / 2;
+
+        ClientToScreen(g_windowHandle, &center);
+        SetCursorPos(center.x, center.y);
+
+        g_lastMousePosition = center;
+    }
+
+    void BeginCameraLook()
+    {
+        if (g_isCameraLookActive)
+            return;
+
+        g_isCameraLookActive = true;
+
+        GetCursorPos(&g_lastMousePosition);
+        ShowCursor(FALSE);
+        SetCapture(g_windowHandle);
+    }
+
+    void EndCameraLook()
+    {
+        if (!g_isCameraLookActive)
+            return;
+
+        g_isCameraLookActive = false;
+
+        ReleaseCapture();
+        ShowCursor(TRUE);
+    }
+
+    void FocusCameraOnLevel()
+    {
+        if (!g_heightmap.IsValid())
+            return;
+
+        const float terrainWidth = static_cast<float>(g_heightmap.GetWidth() - 1) * g_renderSettings.CellSizeX;
+        const float terrainHeight = static_cast<float>(g_heightmap.GetHeight() - 1) * g_renderSettings.CellSizeY;
+        const float maxTerrainAxis = (std::max)(terrainWidth, terrainHeight);
+
+        g_renderSettings.CameraX = 0.0f;
+        g_renderSettings.CameraY = (std::max)(4500.0f, maxTerrainAxis * 0.20f);
+        g_renderSettings.CameraZ = -(std::max)(6500.0f, maxTerrainAxis * 0.34f);
+        g_renderSettings.CameraYaw = 0.0f;
+        g_renderSettings.CameraPitch = -34.0f;
+        g_renderSettings.CameraSpeed = 2000.0f * g_editorSpeed;
+    }
+
+    void UpdateFlyCamera()
+    {
+        ImGuiIO& io = ImGui::GetIO();
+
+        if (IsTextInputActive())
+        {
+            EndCameraLook();
+            return;
+        }
+
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+            BeginCameraLook();
+
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+            EndCameraLook();
+
+        if (!g_isCameraLookActive)
+        {
+            if (io.MouseWheel != 0.0f && !io.WantCaptureMouse)
+            {
+                const float speedFactor = io.MouseWheel > 0.0f ? 1.15f : 0.87f;
+                g_renderSettings.CameraSpeed = std::clamp(g_renderSettings.CameraSpeed * speedFactor, 100.0f, 500000.0f);
+                g_editorSpeed = std::clamp(g_renderSettings.CameraSpeed / 2000.0f, 1.0f, 30.0f);
+            }
+
+            return;
+        }
+
+        POINT currentMousePosition{};
+        GetCursorPos(&currentMousePosition);
+
+        const float deltaX = static_cast<float>(currentMousePosition.x - g_lastMousePosition.x);
+        const float deltaY = static_cast<float>(currentMousePosition.y - g_lastMousePosition.y);
+
+        g_lastMousePosition = currentMousePosition;
+
+        constexpr float mouseSensitivity = 0.13f;
+
+        g_renderSettings.CameraYaw += deltaX * mouseSensitivity;
+        g_renderSettings.CameraPitch = std::clamp(
+            g_renderSettings.CameraPitch - deltaY * mouseSensitivity,
+            -89.0f,
+            89.0f);
+
+        EditorVector3 moveDirection{};
+
+        const EditorVector3 forward = CameraForward();
+        const EditorVector3 right = CameraRight();
+
+        if (ImGui::IsKeyDown(ImGuiKey_W))
+            moveDirection = Add(moveDirection, forward);
+
+        if (ImGui::IsKeyDown(ImGuiKey_S))
+            moveDirection = Add(moveDirection, Scale(forward, -1.0f));
+
+        if (ImGui::IsKeyDown(ImGuiKey_D))
+            moveDirection = Add(moveDirection, right);
+
+        if (ImGui::IsKeyDown(ImGuiKey_A))
+            moveDirection = Add(moveDirection, Scale(right, -1.0f));
+
+        if (ImGui::IsKeyDown(ImGuiKey_E))
+            moveDirection.Y += 1.0f;
+
+        if (ImGui::IsKeyDown(ImGuiKey_Q))
+            moveDirection.Y -= 1.0f;
+
+        moveDirection = Normalize(moveDirection);
+
+        float speedMultiplier = 1.0f;
+
+        if (ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift))
+            speedMultiplier *= 4.0f;
+
+        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl))
+            speedMultiplier *= 0.25f;
+
+        const float deltaTime = (std::max)(io.DeltaTime, 0.001f);
+        const float cameraStep = g_renderSettings.CameraSpeed * speedMultiplier * deltaTime;
+
+        g_renderSettings.CameraX += moveDirection.X * cameraStep;
+        g_renderSettings.CameraY += moveDirection.Y * cameraStep;
+        g_renderSettings.CameraZ += moveDirection.Z * cameraStep;
+
+        if (io.MouseWheel != 0.0f)
+        {
+            const float speedFactor = io.MouseWheel > 0.0f ? 1.15f : 0.87f;
+            g_renderSettings.CameraSpeed = std::clamp(g_renderSettings.CameraSpeed * speedFactor, 100.0f, 500000.0f);
+            g_editorSpeed = std::clamp(g_renderSettings.CameraSpeed / 2000.0f, 1.0f, 30.0f);
+        }
+    }
+
     float HeightForEditorPreview(float rawHeight)
     {
         const float clampedRawHeight = std::clamp(rawHeight, 0.0f, 1.0f);
@@ -889,6 +1076,17 @@ namespace
     {
         ImGuiIO& io = ImGui::GetIO();
 
+        UpdateFlyCamera();
+
+        if (!io.WantCaptureKeyboard && !IsTextInputActive())
+        {
+            if (ImGui::IsKeyPressed(ImGuiKey_F))
+                FocusCameraOnLevel();
+
+            if (ImGui::IsKeyPressed(ImGuiKey_F5))
+                CreatePreviewIslandLevel();
+        }
+
         if (!g_heightmap.IsValid())
             return;
 
@@ -906,6 +1104,9 @@ namespace
 
         if (!io.WantCaptureKeyboard)
         {
+            if (ImGui::IsKeyPressed(ImGuiKey_F5))
+                CreatePreviewIslandLevel();
+
             if (ImGui::IsKeyPressed(ImGuiKey_1))
                 g_brushModeIndex = 0;
 
@@ -920,56 +1121,13 @@ namespace
 
             if (ImGui::IsKeyPressed(ImGuiKey_F))
                 ResetCameraToHeightmap();
-
-            EditorVector3 moveDirection{};
-
-            if (ImGui::IsKeyDown(ImGuiKey_W))
-                moveDirection = Add(moveDirection, CameraForward());
-
-            if (ImGui::IsKeyDown(ImGuiKey_S))
-                moveDirection = Add(moveDirection, Scale(CameraForward(), -1.0f));
-
-            if (ImGui::IsKeyDown(ImGuiKey_D))
-                moveDirection = Add(moveDirection, CameraRight());
-
-            if (ImGui::IsKeyDown(ImGuiKey_A))
-                moveDirection = Add(moveDirection, Scale(CameraRight(), -1.0f));
-
-            if (ImGui::IsKeyDown(ImGuiKey_E))
-                moveDirection.Y += 1.0f;
-
-            if (ImGui::IsKeyDown(ImGuiKey_Q))
-                moveDirection.Y -= 1.0f;
-
-            moveDirection = Normalize(moveDirection);
-
-            const float speedMultiplier = io.KeyShift ? 4.0f : 1.0f;
-            const float cameraStep = g_renderSettings.CameraSpeed * speedMultiplier * (std::max)(io.DeltaTime, 0.001f);
-
-            g_renderSettings.CameraX += moveDirection.X * cameraStep;
-            g_renderSettings.CameraY += moveDirection.Y * cameraStep;
-            g_renderSettings.CameraZ += moveDirection.Z * cameraStep;
         }
 
-        if (!io.WantCaptureMouse)
-        {
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Right))
-            {
-                g_renderSettings.CameraYaw += io.MouseDelta.x * 0.14f;
-                g_renderSettings.CameraPitch = std::clamp(
-                    g_renderSettings.CameraPitch - io.MouseDelta.y * 0.14f,
-                    -85.0f,
-                    85.0f);
-            }
-
-            if (io.MouseWheel != 0.0f)
-            {
-                const float speedFactor = io.MouseWheel > 0.0f ? 1.12f : 0.89f;
-                g_renderSettings.CameraSpeed = std::clamp(g_renderSettings.CameraSpeed * speedFactor, 50.0f, 1000000.0f);
-            }
-        }
-
-        if (mouseOverHeightmap && !io.WantCaptureMouse && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        if (g_activeStudioTab == StudioTab::Terrain &&
+            mouseOverHeightmap &&
+            !g_isCameraLookActive &&
+            !io.WantCaptureMouse &&
+            ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
             StalkerOnline::Editor::TerrainBrushMode brushMode = BrushModeFromIndex(g_brushModeIndex);
 
@@ -1139,7 +1297,10 @@ namespace
 
         ImGui::SliderInt("Render cells", &g_renderSettings.MaxRenderedCellsPerAxis, 32, 512);
         ImGui::Checkbox("Normalize preview", &g_renderSettings.NormalizeHeightPreview);
-        ImGui::Checkbox("Wireframe", &g_renderSettings.ShowWireframe);
+        ImGui::Checkbox("Terrain wireframe", &g_renderSettings.ShowWireframe);
+        ImGui::Checkbox("Debug grid", &g_renderSettings.ShowDebugGrid);
+        ImGui::Checkbox("Object wireframe", &g_renderSettings.ShowObjectWireframe);
+        ImGui::Checkbox("Water preview", &g_renderSettings.ShowWater);
 
         ImGui::Separator();
 
@@ -1648,6 +1809,14 @@ namespace
             }
         }
 
+        ImGui::SameLine();
+
+        if (StudioSmallButton("TEST MAP", false, 94.0f))
+        {
+            CreatePreviewIslandLevel();
+            g_activeStudioTab = StudioTab::Settings;
+        }
+
         ImGui::End();
 
         ImGui::PopStyleColor();
@@ -1885,7 +2054,7 @@ namespace
         ImGuiIO& io = ImGui::GetIO();
 
         ImGui::Text(
-            "SO_EDITOR FPS %.1f [%.2fms] Objs:[%d] Cam:[%.1f %.1f %.1f] Dirty:%s",
+            "SO_EDITOR FPS %.1f [%.2fms] Objs:[%d] Cam:[%.1f %.1f %.1f] Dirty:%s | RMB fly, WASD QE, Shift, Ctrl, F focus, F5 test",
             io.Framerate,
             io.Framerate > 0.0f ? 1000.0f / io.Framerate : 0.0f,
             static_cast<int>(g_editorScene.GetObjects().size()),
@@ -1905,8 +2074,8 @@ namespace
         ImGui::SameLine();
         ImGui::SetNextItemWidth(160.0f);
 
-        if (ImGui::SliderFloat("##StudioSpeed", &g_editorSpeed, 1.0f, 20.0f, "%.0f"))
-            g_renderSettings.CameraSpeed = 1400.0f * g_editorSpeed;
+        if (ImGui::SliderFloat("##StudioSpeed", &g_editorSpeed, 1.0f, 30.0f, "%.0f"))
+            g_renderSettings.CameraSpeed = 2000.0f * g_editorSpeed;
 
         ImGui::End();
 
@@ -2018,6 +2187,12 @@ LRESULT WINAPI WindowProc(
             break;
         }
 
+        case WM_KILLFOCUS:
+        {
+            EndCameraLook();
+            return 0;
+        }
+
         case WM_DESTROY:
         {
             g_running.store(false);
@@ -2122,7 +2297,7 @@ int WINAPI wWinMain(
         return 1;
     }
 
-    CreateFlatLevel();
+    CreatePreviewIslandLevel();
 
     if (!speedTreeDx11Init.Success)
         SetStatus(speedTreeDx11Init.Message);

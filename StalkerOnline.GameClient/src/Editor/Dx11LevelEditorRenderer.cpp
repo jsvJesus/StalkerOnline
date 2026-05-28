@@ -382,7 +382,7 @@ namespace StalkerOnline::Editor
             }
         }
 
-        void AddWaterPlane(
+                void AddWaterPlane(
             std::vector<Dx11LevelEditorRenderer::Vertex>& triangleVertices,
             const Heightmap& heightmap,
             const LevelEditorRenderSettings& settings)
@@ -393,22 +393,72 @@ namespace StalkerOnline::Editor
             const float terrainWidth = static_cast<float>(heightmap.GetWidth() - 1) * settings.CellSizeX;
             const float terrainHeight = static_cast<float>(heightmap.GetHeight() - 1) * settings.CellSizeY;
 
+            const float minTerrainX = -terrainWidth * 0.5f;
+            const float maxTerrainX = terrainWidth * 0.5f;
+            const float minTerrainZ = -terrainHeight * 0.5f;
+            const float maxTerrainZ = terrainHeight * 0.5f;
+
             const float maxAxis = (std::max)(terrainWidth, terrainHeight);
-            const float margin = maxAxis * 0.35f;
+            const float margin = maxAxis * 0.55f;
 
-            const float minX = -terrainWidth * 0.5f - margin;
-            const float maxX =  terrainWidth * 0.5f + margin;
-            const float minZ = -terrainHeight * 0.5f - margin;
-            const float maxZ =  terrainHeight * 0.5f + margin;
+            const float minX = minTerrainX - margin;
+            const float maxX = maxTerrainX + margin;
+            const float minZ = minTerrainZ - margin;
+            const float maxZ = maxTerrainZ + margin;
 
-            const float waterRawLevel = 0.337f;
+            /*
+                Важно:
+                preview island сейчас имеет берег примерно 0.315.
+                Если вода выше 0.315 — она накрывает карту.
+                Поэтому держим waterRawLevel ниже берега.
+            */
+            const float waterRawLevel = 0.292f;
+
             const float waterY =
-                (HeightForPreview(waterRawLevel, settings) - 0.5f) * settings.HeightScale + 12.0f;
+                (HeightForPreview(waterRawLevel, settings) - 0.5f) * settings.HeightScale - 20.0f;
 
-            constexpr int grid = 24;
+            constexpr int grid = 96;
 
-            const Color shallowWater { 0.050f, 0.390f, 0.410f, 1.0f };
-            const Color deepWater    { 0.025f, 0.145f, 0.220f, 1.0f };
+            const Color shallowWater { 0.045f, 0.310f, 0.340f, 1.0f };
+            const Color deepWater    { 0.018f, 0.095f, 0.160f, 1.0f };
+            const Color farWater     { 0.015f, 0.070f, 0.125f, 1.0f };
+
+            const float heightmapCenterX = static_cast<float>(heightmap.GetWidth() - 1) * 0.5f;
+            const float heightmapCenterY = static_cast<float>(heightmap.GetHeight() - 1) * 0.5f;
+
+            auto shouldDrawWaterCell = [&](float worldX, float worldZ)
+            {
+                const bool outsideTerrain =
+                    worldX < minTerrainX ||
+                    worldX > maxTerrainX ||
+                    worldZ < minTerrainZ ||
+                    worldZ > maxTerrainZ;
+
+                if (outsideTerrain)
+                    return true;
+
+                const float heightmapX = worldX / settings.CellSizeX + heightmapCenterX;
+                const float heightmapY = worldZ / settings.CellSizeY + heightmapCenterY;
+
+                const int sampleX = std::clamp(
+                    static_cast<int>(std::round(heightmapX)),
+                    0,
+                    heightmap.GetWidth() - 1);
+
+                const int sampleY = std::clamp(
+                    static_cast<int>(std::round(heightmapY)),
+                    0,
+                    heightmap.GetHeight() - 1);
+
+                const float rawHeight = heightmap.GetHeightNormalized(sampleX, sampleY);
+
+                /*
+                    Рисуем воду внутри terrain только если земля реально ниже воды.
+                    Сейчас для preview island это почти не сработает, и это правильно:
+                    остров не должен быть залит.
+                */
+                return rawHeight <= waterRawLevel;
+            };
 
             for (int z = 0; z < grid; ++z)
             {
@@ -424,20 +474,39 @@ namespace StalkerOnline::Editor
                     const float wz0 = minZ + (maxZ - minZ) * tz0;
                     const float wz1 = minZ + (maxZ - minZ) * tz1;
 
-                    const float centerX = (tx0 + tx1) * 0.5f - 0.5f;
-                    const float centerZ = (tz0 + tz1) * 0.5f - 0.5f;
-                    const float distance = std::sqrt(centerX * centerX + centerZ * centerZ) * 2.0f;
+                    const float centerWorldX = (wx0 + wx1) * 0.5f;
+                    const float centerWorldZ = (wz0 + wz1) * 0.5f;
+
+                    if (!shouldDrawWaterCell(centerWorldX, centerWorldZ))
+                        continue;
+
+                    const float normalizedDistanceFromCenter =
+                        std::sqrt(
+                            (centerWorldX / (maxAxis * 0.5f)) * (centerWorldX / (maxAxis * 0.5f)) +
+                            (centerWorldZ / (maxAxis * 0.5f)) * (centerWorldZ / (maxAxis * 0.5f)));
 
                     const float wave =
-                        (std::sin(wx0 * 0.0017f + wz0 * 0.0023f) + 1.0f) * 0.5f;
+                        (std::sin(centerWorldX * 0.0012f + centerWorldZ * 0.0017f) + 1.0f) * 0.5f;
 
-                    const Color waterColor =
-                        LerpColor(shallowWater, deepWater, std::clamp(distance * 0.85f + wave * 0.12f, 0.0f, 1.0f));
+                    Color waterColor =
+                        LerpColor(
+                            shallowWater,
+                            deepWater,
+                            std::clamp(normalizedDistanceFromCenter * 0.55f + wave * 0.08f, 0.0f, 1.0f));
 
-                    const Float3 p00{ wx0, waterY, wz0 };
-                    const Float3 p10{ wx1, waterY, wz0 };
-                    const Float3 p11{ wx1, waterY, wz1 };
-                    const Float3 p01{ wx0, waterY, wz1 };
+                    waterColor =
+                        LerpColor(
+                            waterColor,
+                            farWater,
+                            std::clamp((normalizedDistanceFromCenter - 1.0f) * 0.65f, 0.0f, 1.0f));
+
+                    const float smallWaveA = std::sin(wx0 * 0.0011f + wz0 * 0.0019f) * 5.0f;
+                    const float smallWaveB = std::sin(wx1 * 0.0011f + wz1 * 0.0019f) * 5.0f;
+
+                    const Float3 p00{ wx0, waterY + smallWaveA, wz0 };
+                    const Float3 p10{ wx1, waterY + smallWaveB, wz0 };
+                    const Float3 p11{ wx1, waterY + smallWaveA, wz1 };
+                    const Float3 p01{ wx0, waterY + smallWaveB, wz1 };
 
                     AddTriangle(triangleVertices, p00, p10, p11, waterColor);
                     AddTriangle(triangleVertices, p00, p11, p01, ScaleColor(waterColor, 0.94f));
@@ -1057,12 +1126,19 @@ namespace StalkerOnline::Editor
         std::vector<Vertex> lineVertices;
 
         BuildTerrainVertices(triangleVertices, lineVertices, heightmap, settings);
-        AddWaterPlane(triangleVertices, heightmap, settings);
+
+        if (settings.ShowWater)
+            AddWaterPlane(triangleVertices, heightmap, settings);
+
         BuildSceneSolidVertices(triangleVertices, scene);
 
-        AddReferenceGrid(lineVertices, heightmap, settings);
+        if (settings.ShowDebugGrid)
+            AddReferenceGrid(lineVertices, heightmap, settings);
+
         AddBrushCircle(lineVertices, heightmap, settings);
-        BuildSceneObjectVertices(lineVertices, scene);
+
+        if (settings.ShowObjectWireframe)
+            BuildSceneObjectVertices(lineVertices, scene);
 
         UploadAndDraw(
             deviceContext,
