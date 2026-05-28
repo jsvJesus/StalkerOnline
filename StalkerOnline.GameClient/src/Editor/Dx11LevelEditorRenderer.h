@@ -12,12 +12,17 @@ namespace StalkerOnline::Editor
 {
     struct LevelEditorRenderSettings
     {
-        float CellSize = 100.0f;
+        float CellSizeX = 100.0f;
+        float CellSizeY = 100.0f;
         float HeightScale = 3000.0f;
 
-        float PanX = 0.0f;
-        float PanZ = 0.0f;
-        float Zoom = 1.0f;
+        float CameraX = 0.0f;
+        float CameraY = 22000.0f;
+        float CameraZ = -36000.0f;
+
+        float CameraYaw = 0.0f;
+        float CameraPitch = -32.0f;
+        float CameraSpeed = 7000.0f;
 
         float BrushX = 0.0f;
         float BrushY = 0.0f;
@@ -25,6 +30,10 @@ namespace StalkerOnline::Editor
 
         int MaxRenderedCellsPerAxis = 256;
 
+        float PreviewMinHeight = 0.0f;
+        float PreviewMaxHeight = 1.0f;
+
+        bool NormalizeHeightPreview = true;
         bool ShowBrush = false;
         bool ShowWireframe = true;
     };

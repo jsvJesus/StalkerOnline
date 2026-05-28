@@ -2,6 +2,7 @@
 #include "UI/UiStyle.h"
 #include "Engine/Renderer/Dx11Renderer.h"
 #include "Engine/Renderer/Dx11WorldRenderer.h"
+#include "SpeedTree/SpeedTreeIntegration.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_win32.h>
@@ -1122,6 +1123,11 @@ int WINAPI wWinMain(
     	g_renderer->GetDeviceContext()
 	);
 
+    StalkerOnline::SpeedTreeIntegration::InitializeDx11Renderer(
+        g_renderer->GetDevice(),
+        g_renderer->GetDeviceContext()
+    );
+
     g_worldRenderer = std::make_unique<StalkerOnline::Engine::Dx11WorldRenderer>();
 
     if (!g_worldRenderer->Initialize(g_renderer->GetDevice()))
@@ -1161,11 +1167,15 @@ int WINAPI wWinMain(
         }
     );
 
+    const StalkerOnline::SpeedTreeIntegration::SdkStatus speedTreeStatus =
+        StalkerOnline::SpeedTreeIntegration::GetSdkStatus();
+
     SetStatus(
         "Ready. Server: " +
         std::string(g_loginState.ServerHost) +
         ":" +
-        std::to_string(g_loginState.ServerPort)
+        std::to_string(g_loginState.ServerPort) +
+        (speedTreeStatus.Available ? " | SpeedTree SDK ready" : " | SpeedTree SDK missing")
     );
 
     MSG message{};

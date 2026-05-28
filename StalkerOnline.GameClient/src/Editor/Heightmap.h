@@ -10,7 +10,8 @@ namespace StalkerOnline::Editor
     {
         UInt8 = 0,
         UInt16LE = 1,
-        Float32LE = 2
+        Float32LE = 2,
+        R16 = 3
     };
 
     enum class TerrainBrushMode : std::uint8_t
@@ -74,4 +75,11 @@ namespace StalkerOnline::Editor
 
     const char* RawHeightFormatToText(RawHeightFormat format);
     const char* TerrainBrushModeToText(TerrainBrushMode mode);
+
+    bool TryDetectSquareRawDimensions(
+        const std::string& path,
+        RawHeightFormat format,
+        int* outWidth,
+        int* outHeight,
+        std::string* errorMessage = nullptr);
 }

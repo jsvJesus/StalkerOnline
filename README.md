@@ -16,8 +16,9 @@ Current focus:
 
 1. Build a real level workflow through `StalkerOnline.LevelEditor`.
 2. Load/edit terrain heightmaps from `.raw` files.
-3. Turn edited terrain data into playable client/server world data.
-4. Continue building gameplay loops: inventory movement, survival stats, combat, loot and world interaction.
+3. Integrate SpeedTree vegetation into the game client and level editor.
+4. Turn edited terrain data into playable client/server world data.
+5. Continue building gameplay loops: inventory movement, survival stats, combat, loot and world interaction.
 
 ## Repository Layout
 
@@ -196,12 +197,18 @@ Current database target: MariaDB/MySQL through `MySqlConnector`.
 - RAW heightmap loading
 - RAW heightmap saving
 - Supported RAW formats:
+  - UE5 `.r16` / RAW16 unsigned little-endian
   - 8-bit unsigned
   - 16-bit unsigned little-endian
   - 32-bit float little-endian
-- User-provided width/height because `.raw` has no metadata
+- Auto-detect square terrain size from file size
+- Manual width/height for generic `.raw` files because `.raw` has no metadata
 - Flat heightmap creation
-- Top-down sculpt viewport
+- Perspective terrain viewport
+- Free fly camera
+- Separate terrain `Scale X` and `Scale Y`
+- UE-style `Z scale` input
+- Derived full height range from `UE Z scale * 512`
 - Terrain color preview by height
 - Wireframe preview
 - Brush cursor
@@ -210,8 +217,27 @@ Current database target: MariaDB/MySQL through `MySqlConnector`.
   - Lower
   - Smooth
   - Flatten
-- Middle mouse panning
-- Mouse wheel zoom
+- RMB mouse look
+- WASD camera movement
+- Q/E vertical camera movement
+- Shift camera speed boost
+- Mouse wheel camera speed adjustment
+
+Example `.r16` size:
+
+- 8192 KiB `.r16` = 2048 x 2048 heightmap at 16 bits per sample
+
+### SpeedTree Integration
+
+- SpeedTree SDK folder support at `StalkerOnline.GameClient/third_party/SpeedTreeSDK`
+- CMake detection for SpeedTree SDK 7.x headers/sources
+- SpeedTree Core and Forest static targets built from SDK source when the SDK is present
+- Shared `SpeedTreeIntegration` module linked into both game client and level editor
+- SpeedTree SDK status/version surfaced in the client/editor
+- Level editor SpeedTree panel for loading `.srt` assets and reading model bounds
+- Editor-side SpeedTree coordinate setup uses right-handed Y-up to match the current DirectX terrain/editor space
+- SDK DirectX 11 renderer sources build and link by default when the SDK is present
+- `STALKERONLINE_BUILD_SPEEDTREE_DX11=OFF` can be used to skip the SDK renderer target while keeping Core/Forest available
 
 ## Packet Groups
 
@@ -235,10 +261,13 @@ The game client scene is still not a real authored level. The new direction is t
 Next work:
 
 - Add a proper `.sollevel` metadata format next to `.raw`
+- Keep `.r16` as terrain height data for UE5-style import/export
 - Store terrain scale, height scale and spawn points
 - Add object placement tools
+- Add SpeedTree `.srt` placement tools
 - Add transform gizmos
 - Add layers/material painting
+- Add vegetation layers / density painting
 - Add terrain collision export
 - Add server-side level loading
 - Add client-side level loading instead of procedural debug terrain
@@ -324,6 +353,12 @@ Build only the level editor:
 cmake --build StalkerOnline.GameClient\build --config Debug --target StalkerOnline.LevelEditor
 ```
 
+Disable the SpeedTree DirectX 11 renderer source target if you only need Core/Forest:
+
+```powershell
+cmake -S StalkerOnline.GameClient -B StalkerOnline.GameClient\build -DSTALKERONLINE_BUILD_SPEEDTREE_DX11=OFF
+```
+
 The current verified state builds cleanly with:
 
 - `dotnet build StalkerOnline.sln`
@@ -356,12 +391,13 @@ Make sure `server.json` and `database.json` are configured for your local or rem
 
 1. Add `.sollevel` metadata beside `.raw` heightmaps.
 2. Add object placement in the level editor.
-3. Add spawn point editing.
-4. Load authored terrain in the game client.
-5. Load authored terrain/world data on the server.
-6. Implement inventory move and stack logic.
-7. Add survival stat ticking.
-8. Start basic combat.
+3. Add SpeedTree placement and rendering in editor viewport.
+4. Add spawn point editing.
+5. Load authored terrain in the game client.
+6. Load authored terrain/world data on the server.
+7. Implement inventory move and stack logic.
+8. Add survival stat ticking.
+9. Start basic combat.
 
 ## License
 

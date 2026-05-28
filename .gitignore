@@ -13,9 +13,16 @@ StalkerOnline.GameClient/out/
 .idea/
 
 # Visual Studio
+build/
+bin/
 .vs/
-*.user
-*.suo
+.idea/
+*.exe
+*.dll
+*.lib
+*.pdb
+*.obj
+*.log
 
 # .NET
 bin/

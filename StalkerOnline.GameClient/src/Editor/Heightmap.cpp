@@ -25,6 +25,9 @@ namespace StalkerOnline::Editor
                 case RawHeightFormat::Float32LE:
                     return 4;
 
+                case RawHeightFormat::R16:
+                    return 2;
+
                 default:
                     return 0;
             }
@@ -147,7 +150,7 @@ namespace StalkerOnline::Editor
                 m_values[static_cast<std::size_t>(i)] =
                     static_cast<float>(bytes[byteOffset]) / 255.0f;
             }
-            else if (options.Format == RawHeightFormat::UInt16LE)
+            else if (options.Format == RawHeightFormat::UInt16LE || options.Format == RawHeightFormat::R16)
             {
                 const std::uint16_t value =
                     static_cast<std::uint16_t>(bytes[byteOffset]) |
@@ -207,7 +210,7 @@ namespace StalkerOnline::Editor
                 const auto output = static_cast<unsigned char>(std::round(value * 255.0f));
                 file.write(reinterpret_cast<const char*>(&output), sizeof(output));
             }
-            else if (format == RawHeightFormat::UInt16LE)
+            else if (format == RawHeightFormat::UInt16LE || format == RawHeightFormat::R16)
             {
                 const auto output = static_cast<std::uint16_t>(std::round(value * 65535.0f));
                 const unsigned char bytes[2]
@@ -409,6 +412,9 @@ namespace StalkerOnline::Editor
             case RawHeightFormat::Float32LE:
                 return "RAW 32-bit float LE";
 
+            case RawHeightFormat::R16:
+                return "UE5 R16 / RAW16 unsigned LE";
+
             default:
                 return "Unknown";
         }
@@ -433,5 +439,77 @@ namespace StalkerOnline::Editor
             default:
                 return "Unknown";
         }
+    }
+
+    bool TryDetectSquareRawDimensions(
+        const std::string& path,
+        RawHeightFormat format,
+        int* outWidth,
+        int* outHeight,
+        std::string* errorMessage)
+    {
+        if (outWidth == nullptr || outHeight == nullptr)
+        {
+            SetError(errorMessage, "Dimension output pointer is null.");
+            return false;
+        }
+
+        if (path.empty())
+        {
+            SetError(errorMessage, "RAW path is empty.");
+            return false;
+        }
+
+        const int bytesPerSample = BytesPerSample(format);
+
+        if (bytesPerSample <= 0)
+        {
+            SetError(errorMessage, "Unsupported RAW format.");
+            return false;
+        }
+
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+
+        if (!file.is_open())
+        {
+            SetError(errorMessage, "Failed to open RAW file for dimension detection.");
+            return false;
+        }
+
+        const std::streamoff byteCount = file.tellg();
+
+        if (byteCount <= 0)
+        {
+            SetError(errorMessage, "RAW file is empty.");
+            return false;
+        }
+
+        const std::uint64_t totalBytes = static_cast<std::uint64_t>(byteCount);
+
+        if (totalBytes % static_cast<std::uint64_t>(bytesPerSample) != 0)
+        {
+            SetError(errorMessage, "RAW file size is not divisible by format sample size.");
+            return false;
+        }
+
+        const std::uint64_t sampleCount = totalBytes / static_cast<std::uint64_t>(bytesPerSample);
+        const auto side = static_cast<std::uint64_t>(std::llround(std::sqrt(static_cast<long double>(sampleCount))));
+
+        if (side < 2 || side * side != sampleCount)
+        {
+            SetError(errorMessage, "RAW file is not a square heightmap for the selected format.");
+            return false;
+        }
+
+        if (side > 8192)
+        {
+            SetError(errorMessage, "Detected RAW size is too large. Max supported size is 8192x8192.");
+            return false;
+        }
+
+        *outWidth = static_cast<int>(side);
+        *outHeight = static_cast<int>(side);
+
+        return true;
     }
 }

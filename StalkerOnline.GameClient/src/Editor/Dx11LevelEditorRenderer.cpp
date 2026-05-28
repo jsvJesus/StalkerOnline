@@ -1,3 +1,7 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "Editor/Dx11LevelEditorRenderer.h"
 
 #include <DirectXMath.h>
@@ -30,29 +34,32 @@ namespace StalkerOnline::Editor
             DirectX::XMMATRIX ViewProjection;
         };
 
-        float SafeZoom(float zoom)
+        float DegToRad(float degrees)
         {
-            return std::clamp(zoom, 0.05f, 64.0f);
+            return degrees * Pi / 180.0f;
         }
 
-        float CalculateOrthoWidth(
-            std::uint32_t viewportWidth,
-            std::uint32_t viewportHeight,
-            const Heightmap& heightmap,
-            const LevelEditorRenderSettings& settings)
+        Float3 CameraForward(const LevelEditorRenderSettings& settings)
         {
-            const float aspectRatio = viewportHeight == 0
-                ? 1.0f
-                : static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
+            const float yaw = DegToRad(settings.CameraYaw);
+            const float pitch = DegToRad(std::clamp(settings.CameraPitch, -89.0f, 89.0f));
+            const float cosPitch = std::cos(pitch);
 
-            const float terrainWidth = static_cast<float>(heightmap.GetWidth() - 1) * settings.CellSize;
-            const float terrainHeight = static_cast<float>(heightmap.GetHeight() - 1) * settings.CellSize;
+            return
+            {
+                std::sin(yaw) * cosPitch,
+                std::sin(pitch),
+                std::cos(yaw) * cosPitch
+            };
+        }
 
-            const float fittedWidth = std::max(
-                terrainWidth * 1.15f,
-                terrainHeight * 1.15f * aspectRatio);
+        float CalculateFarPlane(const Heightmap& heightmap, const LevelEditorRenderSettings& settings)
+        {
+            const float terrainWidth = static_cast<float>(heightmap.GetWidth() - 1) * settings.CellSizeX;
+            const float terrainHeight = static_cast<float>(heightmap.GetHeight() - 1) * settings.CellSizeY;
+            const float maxTerrainAxis = (std::max)(terrainWidth, terrainHeight);
 
-            return std::max(1.0f, fittedWidth / SafeZoom(settings.Zoom));
+            return (std::max)(maxTerrainAxis * 4.0f, settings.HeightScale * 12.0f);
         }
 
         DirectX::XMMATRIX BuildViewProjection(
@@ -65,30 +72,28 @@ namespace StalkerOnline::Editor
                 ? 1.0f
                 : static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
 
-            const float orthoWidth = CalculateOrthoWidth(viewportWidth, viewportHeight, heightmap, settings);
-            const float orthoHeight = orthoWidth / aspectRatio;
-            const float cameraHeight = std::max(settings.HeightScale * 2.5f, 10000.0f);
+            const Float3 forward = CameraForward(settings);
 
             const DirectX::XMVECTOR eye = DirectX::XMVectorSet(
-                settings.PanX,
-                cameraHeight,
-                settings.PanZ,
+                settings.CameraX,
+                settings.CameraY,
+                settings.CameraZ,
                 1.0f);
 
             const DirectX::XMVECTOR target = DirectX::XMVectorSet(
-                settings.PanX,
-                0.0f,
-                settings.PanZ,
+                settings.CameraX + forward.X,
+                settings.CameraY + forward.Y,
+                settings.CameraZ + forward.Z,
                 1.0f);
 
-            const DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+            const DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
             const DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(eye, target, up);
-            const DirectX::XMMATRIX projection = DirectX::XMMatrixOrthographicLH(
-                orthoWidth,
-                orthoHeight,
-                1.0f,
-                cameraHeight * 2.0f);
+            const DirectX::XMMATRIX projection = DirectX::XMMatrixPerspectiveFovLH(
+                DegToRad(60.0f),
+                aspectRatio,
+                (std::max)(1.0f, (std::min)(settings.CellSizeX, settings.CellSizeY) * 0.02f),
+                CalculateFarPlane(heightmap, settings));
 
             return view * projection;
         }
@@ -113,9 +118,9 @@ namespace StalkerOnline::Editor
                 const float t = value / 0.25f;
                 return
                 {
-                    0.070f + t * 0.035f,
-                    0.120f + t * 0.070f,
-                    0.105f + t * 0.045f,
+                    0.100f + t * 0.055f,
+                    0.165f + t * 0.095f,
+                    0.135f + t * 0.060f,
                     1.0f
                 };
             }
@@ -125,9 +130,9 @@ namespace StalkerOnline::Editor
                 const float t = (value - 0.25f) / 0.40f;
                 return
                 {
-                    0.115f + t * 0.180f,
-                    0.175f + t * 0.155f,
-                    0.120f + t * 0.085f,
+                    0.165f + t * 0.205f,
+                    0.245f + t * 0.175f,
+                    0.150f + t * 0.100f,
                     1.0f
                 };
             }
@@ -135,11 +140,30 @@ namespace StalkerOnline::Editor
             const float t = (value - 0.65f) / 0.35f;
             return
             {
-                0.290f + t * 0.340f,
-                0.305f + t * 0.325f,
-                0.225f + t * 0.310f,
+                0.350f + t * 0.360f,
+                0.390f + t * 0.330f,
+                0.250f + t * 0.320f,
                 1.0f
             };
+        }
+
+        float HeightForPreview(
+            float rawHeight,
+            const LevelEditorRenderSettings& settings)
+        {
+            const float clampedRawHeight = std::clamp(rawHeight, 0.0f, 1.0f);
+
+            if (!settings.NormalizeHeightPreview)
+                return clampedRawHeight;
+
+            const float minHeight = std::clamp(settings.PreviewMinHeight, 0.0f, 1.0f);
+            const float maxHeight = std::clamp(settings.PreviewMaxHeight, 0.0f, 1.0f);
+            const float range = maxHeight - minHeight;
+
+            if (range <= 0.000001f)
+                return 0.5f;
+
+            return std::clamp((clampedRawHeight - minHeight) / range, 0.0f, 1.0f);
         }
 
         Float3 HeightmapPoint(
@@ -153,9 +177,9 @@ namespace StalkerOnline::Editor
 
             return
             {
-                (static_cast<float>(x) - centerX) * settings.CellSize,
-                heightmap.GetHeightNormalized(x, y) * settings.HeightScale,
-                (static_cast<float>(y) - centerY) * settings.CellSize
+                (static_cast<float>(x) - centerX) * settings.CellSizeX,
+                (HeightForPreview(heightmap.GetHeightNormalized(x, y), settings) - 0.5f) * settings.HeightScale,
+                (static_cast<float>(y) - centerY) * settings.CellSizeY
             };
         }
 
@@ -201,10 +225,10 @@ namespace StalkerOnline::Editor
 
         int CalculateRenderStep(const Heightmap& heightmap, const LevelEditorRenderSettings& settings)
         {
-            const int maxAxis = std::max(heightmap.GetWidth(), heightmap.GetHeight());
+            const int maxAxis = (std::max)(heightmap.GetWidth(), heightmap.GetHeight());
             const int targetCells = std::clamp(settings.MaxRenderedCellsPerAxis, 32, 1024);
 
-            return std::max(1, maxAxis / targetCells);
+            return (std::max)(1, maxAxis / targetCells);
         }
 
         void BuildTerrainVertices(
@@ -231,8 +255,8 @@ namespace StalkerOnline::Editor
             {
                 for (int x = 0; x < heightmap.GetWidth() - step; x += step)
                 {
-                    const int x1 = std::min(x + step, heightmap.GetWidth() - 1);
-                    const int y1 = std::min(y + step, heightmap.GetHeight() - 1);
+                    const int x1 = (std::min)(x + step, heightmap.GetWidth() - 1);
+                    const int y1 = (std::min)(y + step, heightmap.GetHeight() - 1);
 
                     const Float3 p00 = HeightmapPoint(heightmap, settings, x, y);
                     const Float3 p10 = HeightmapPoint(heightmap, settings, x1, y);
@@ -245,7 +269,7 @@ namespace StalkerOnline::Editor
                         heightmap.GetHeightNormalized(x1, y1) +
                         heightmap.GetHeightNormalized(x, y1)) * 0.25f;
 
-                    const Color color = TerrainColor(averageHeight);
+                    const Color color = TerrainColor(HeightForPreview(averageHeight, settings));
 
                     AddTriangle(triangleVertices, p00, p10, p11, color);
                     AddTriangle(triangleVertices, p00, p11, p01, ScaleColor(color, 0.93f));
@@ -258,6 +282,46 @@ namespace StalkerOnline::Editor
                     }
                 }
             }
+        }
+
+        void AddReferenceGrid(
+            std::vector<Dx11LevelEditorRenderer::Vertex>& lineVertices,
+            const Heightmap& heightmap,
+            const LevelEditorRenderSettings& settings)
+        {
+            if (!heightmap.IsValid())
+                return;
+
+            const float terrainWidth = static_cast<float>(heightmap.GetWidth() - 1) * settings.CellSizeX;
+            const float terrainHeight = static_cast<float>(heightmap.GetHeight() - 1) * settings.CellSizeY;
+
+            const float minX = -terrainWidth * 0.5f;
+            const float maxX = terrainWidth * 0.5f;
+            const float minZ = -terrainHeight * 0.5f;
+            const float maxZ = terrainHeight * 0.5f;
+
+            const float y = (std::min)(settings.CellSizeX, settings.CellSizeY) * 0.08f;
+            const Color gridColor{ 0.210f, 0.250f, 0.185f, 1.0f };
+            const Color majorGridColor{ 0.330f, 0.360f, 0.230f, 1.0f };
+            const Color xAxisColor{ 0.650f, 0.280f, 0.190f, 1.0f };
+            const Color zAxisColor{ 0.220f, 0.390f, 0.670f, 1.0f };
+
+            constexpr int gridDivisions = 16;
+
+            for (int i = 0; i <= gridDivisions; ++i)
+            {
+                const float t = static_cast<float>(i) / static_cast<float>(gridDivisions);
+                const float x = minX + (maxX - minX) * t;
+                const float z = minZ + (maxZ - minZ) * t;
+                const bool majorLine = i == 0 || i == gridDivisions || i == gridDivisions / 2;
+                const Color color = majorLine ? majorGridColor : gridColor;
+
+                AddLine(lineVertices, { x, y, minZ }, { x, y, maxZ }, color);
+                AddLine(lineVertices, { minX, y, z }, { maxX, y, z }, color);
+            }
+
+            AddLine(lineVertices, { minX, y * 1.5f, 0.0f }, { maxX, y * 1.5f, 0.0f }, xAxisColor);
+            AddLine(lineVertices, { 0.0f, y * 1.5f, minZ }, { 0.0f, y * 1.5f, maxZ }, zAxisColor);
         }
 
         void AddBrushCircle(
@@ -273,12 +337,25 @@ namespace StalkerOnline::Editor
             const float centerX = static_cast<float>(heightmap.GetWidth() - 1) * 0.5f;
             const float centerY = static_cast<float>(heightmap.GetHeight() - 1) * 0.5f;
 
-            const float worldX = (settings.BrushX - centerX) * settings.CellSize;
-            const float worldZ = (settings.BrushY - centerY) * settings.CellSize;
-            const float radius = std::max(0.1f, settings.BrushRadiusCells * settings.CellSize);
-            const float y = settings.HeightScale + settings.CellSize * 0.25f;
+            const float radiusCells = (std::max)(0.1f, settings.BrushRadiusCells);
 
             const Color color{ 1.0f, 0.760f, 0.190f, 1.0f };
+
+            auto makeCirclePoint = [&](float angle)
+            {
+                const float sampleX = settings.BrushX + std::cos(angle) * radiusCells;
+                const float sampleY = settings.BrushY + std::sin(angle) * radiusCells;
+
+                const int heightSampleX = std::clamp(static_cast<int>(std::round(sampleX)), 0, heightmap.GetWidth() - 1);
+                    const int heightSampleY = std::clamp(static_cast<int>(std::round(sampleY)), 0, heightmap.GetHeight() - 1);
+
+                return Float3
+                {
+                    (sampleX - centerX) * settings.CellSizeX,
+                    (HeightForPreview(heightmap.GetHeightNormalized(heightSampleX, heightSampleY), settings) - 0.5f) * settings.HeightScale + (std::min)(settings.CellSizeX, settings.CellSizeY) * 0.35f,
+                    (sampleY - centerY) * settings.CellSizeY
+                };
+            };
 
             for (int i = 0; i < segmentCount; ++i)
             {
@@ -287,8 +364,8 @@ namespace StalkerOnline::Editor
 
                 AddLine(
                     lineVertices,
-                    Float3{ worldX + std::cos(angleA) * radius, y, worldZ + std::sin(angleA) * radius },
-                    Float3{ worldX + std::cos(angleB) * radius, y, worldZ + std::sin(angleB) * radius },
+                    makeCirclePoint(angleA),
+                    makeCirclePoint(angleB),
                     color);
             }
         }
@@ -446,6 +523,7 @@ namespace StalkerOnline::Editor
         std::vector<Vertex> lineVertices;
 
         BuildTerrainVertices(triangleVertices, lineVertices, heightmap, settings);
+        AddReferenceGrid(lineVertices, heightmap, settings);
         AddBrushCircle(lineVertices, heightmap, settings);
 
         UploadAndDraw(
@@ -638,7 +716,7 @@ float4 PSMain(PS_INPUT input) : SV_TARGET
 
         while (offset < vertices.size())
         {
-            std::size_t batchCount = std::min(MaxDynamicVertices, vertices.size() - offset);
+            std::size_t batchCount = (std::min)(MaxDynamicVertices, vertices.size() - offset);
             batchCount -= batchCount % primitiveVertexCount;
 
             if (batchCount == 0)

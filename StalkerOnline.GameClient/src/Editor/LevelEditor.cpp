@@ -1,6 +1,11 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "Editor/Dx11LevelEditorRenderer.h"
 #include "Editor/Heightmap.h"
 #include "Engine/Renderer/Dx11Renderer.h"
+#include "SpeedTree/SpeedTreeIntegration.h"
 #include "UI/UiStyle.h"
 
 #include <imgui.h>
@@ -13,6 +18,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -34,33 +41,44 @@ namespace
 
     char g_rawPath[260] = {};
     char g_savePath[260] = {};
+    char g_speedTreeAssetPath[260] = {};
     char g_statusText[512] = "Ready.";
 
     int g_rawWidth = 513;
     int g_rawHeight = 513;
-    int g_rawFormatIndex = 1;
+    int g_rawFormatIndex = 0;
     int g_brushModeIndex = 0;
 
     float g_brushStrength = 0.45f;
     float g_flattenHeight = 0.5f;
+    float g_ueZScale = 13.498139f;
 
+    bool g_autoDetectSquareSize = true;
     bool g_isDirty = false;
+
+    float g_heightMin = 0.0f;
+    float g_heightMax = 1.0f;
+
+    StalkerOnline::SpeedTreeIntegration::TreeAssetInfo g_speedTreeAsset;
 
     StalkerOnline::Editor::RawHeightFormat FormatFromIndex(int index)
     {
         switch (index)
         {
             case 0:
-                return StalkerOnline::Editor::RawHeightFormat::UInt8;
+                return StalkerOnline::Editor::RawHeightFormat::R16;
 
             case 1:
-                return StalkerOnline::Editor::RawHeightFormat::UInt16LE;
+                return StalkerOnline::Editor::RawHeightFormat::UInt8;
 
             case 2:
+                return StalkerOnline::Editor::RawHeightFormat::UInt16LE;
+
+            case 3:
                 return StalkerOnline::Editor::RawHeightFormat::Float32LE;
 
             default:
-                return StalkerOnline::Editor::RawHeightFormat::UInt16LE;
+                return StalkerOnline::Editor::RawHeightFormat::R16;
         }
     }
 
@@ -98,6 +116,101 @@ namespace
         std::snprintf(destination, destinationSize, "%s", value.c_str());
     }
 
+    bool EndsWithCaseInsensitive(const std::string& value, const std::string& suffix)
+    {
+        if (suffix.size() > value.size())
+            return false;
+
+        const std::size_t offset = value.size() - suffix.size();
+
+        for (std::size_t i = 0; i < suffix.size(); ++i)
+        {
+            const auto a = static_cast<unsigned char>(value[offset + i]);
+            const auto b = static_cast<unsigned char>(suffix[i]);
+
+            if (std::tolower(a) != std::tolower(b))
+                return false;
+        }
+
+        return true;
+    }
+
+    void SelectFormatFromPath(const std::string& path)
+    {
+        if (EndsWithCaseInsensitive(path, ".r16"))
+            g_rawFormatIndex = 0;
+    }
+
+    void RefreshHeightStats()
+    {
+        if (!g_heightmap.IsValid() || g_heightmap.GetValues().empty())
+        {
+            g_heightMin = 0.0f;
+            g_heightMax = 1.0f;
+        }
+        else
+        {
+            const auto [minIt, maxIt] = std::minmax_element(
+                g_heightmap.GetValues().begin(),
+                g_heightmap.GetValues().end());
+
+            g_heightMin = *minIt;
+            g_heightMax = *maxIt;
+        }
+
+        g_renderSettings.PreviewMinHeight = g_heightMin;
+        g_renderSettings.PreviewMaxHeight = g_heightMax;
+    }
+
+    bool AutoDetectRawDimensions(const std::string& path, bool updateStatusOnFailure)
+    {
+        int detectedWidth = 0;
+        int detectedHeight = 0;
+        std::string errorMessage;
+
+        if (!StalkerOnline::Editor::TryDetectSquareRawDimensions(
+            path,
+            FormatFromIndex(g_rawFormatIndex),
+            &detectedWidth,
+            &detectedHeight,
+            &errorMessage))
+        {
+            if (updateStatusOnFailure)
+                SetStatus("Auto size failed: " + errorMessage);
+
+            return false;
+        }
+
+        g_rawWidth = detectedWidth;
+        g_rawHeight = detectedHeight;
+
+        SetStatus(
+            "Auto-detected terrain size: " +
+            std::to_string(g_rawWidth) +
+            "x" +
+            std::to_string(g_rawHeight) +
+            ".");
+
+        return true;
+    }
+
+    void ResetCameraToHeightmap()
+    {
+        if (!g_heightmap.IsValid())
+            return;
+
+        const float terrainWidth = static_cast<float>(g_heightmap.GetWidth() - 1) * g_renderSettings.CellSizeX;
+        const float terrainHeight = static_cast<float>(g_heightmap.GetHeight() - 1) * g_renderSettings.CellSizeY;
+        const float maxTerrainAxis = (std::max)(terrainWidth, terrainHeight);
+
+        g_renderSettings.CameraX = 0.0f;
+        g_renderSettings.CameraY = (std::max)(g_renderSettings.HeightScale * 2.5f, maxTerrainAxis * 0.42f);
+        g_renderSettings.CameraZ = -(std::max)(1000.0f, maxTerrainAxis * 0.72f);
+        g_renderSettings.CameraYaw = 0.0f;
+        g_renderSettings.CameraPitch = -32.0f;
+        g_renderSettings.CameraSpeed = (std::max)(700.0f, maxTerrainAxis * 0.14f);
+    }
+
     std::string ShowOpenRawDialog()
     {
         char fileName[MAX_PATH] = {};
@@ -105,11 +218,15 @@ namespace
         OPENFILENAMEA openFileName{};
         openFileName.lStructSize = sizeof(openFileName);
         openFileName.hwndOwner = g_windowHandle;
-        openFileName.lpstrFilter = "RAW Heightmap (*.raw)\0*.raw\0All Files (*.*)\0*.*\0";
+        openFileName.lpstrFilter =
+            "Terrain Heightmaps (*.r16;*.raw)\0*.r16;*.raw\0"
+            "UE5 R16 Heightmap (*.r16)\0*.r16\0"
+            "RAW Heightmap (*.raw)\0*.raw\0"
+            "All Files (*.*)\0*.*\0";
         openFileName.lpstrFile = fileName;
         openFileName.nMaxFile = MAX_PATH;
         openFileName.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-        openFileName.lpstrDefExt = "raw";
+        openFileName.lpstrDefExt = "r16";
 
         if (!GetOpenFileNameA(&openFileName))
             return {};
@@ -129,13 +246,37 @@ namespace
         OPENFILENAMEA saveFileName{};
         saveFileName.lStructSize = sizeof(saveFileName);
         saveFileName.hwndOwner = g_windowHandle;
-        saveFileName.lpstrFilter = "RAW Heightmap (*.raw)\0*.raw\0All Files (*.*)\0*.*\0";
+        saveFileName.lpstrFilter =
+            "UE5 R16 Heightmap (*.r16)\0*.r16\0"
+            "RAW Heightmap (*.raw)\0*.raw\0"
+            "All Files (*.*)\0*.*\0";
         saveFileName.lpstrFile = fileName;
         saveFileName.nMaxFile = MAX_PATH;
         saveFileName.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-        saveFileName.lpstrDefExt = "raw";
+        saveFileName.lpstrDefExt = "r16";
 
         if (!GetSaveFileNameA(&saveFileName))
+            return {};
+
+        return fileName;
+    }
+
+    std::string ShowOpenSpeedTreeDialog()
+    {
+        char fileName[MAX_PATH] = {};
+
+        OPENFILENAMEA openFileName{};
+        openFileName.lStructSize = sizeof(openFileName);
+        openFileName.hwndOwner = g_windowHandle;
+        openFileName.lpstrFilter =
+            "SpeedTree Assets (*.srt)\0*.srt\0"
+            "All Files (*.*)\0*.*\0";
+        openFileName.lpstrFile = fileName;
+        openFileName.nMaxFile = MAX_PATH;
+        openFileName.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        openFileName.lpstrDefExt = "srt";
+
+        if (!GetOpenFileNameA(&openFileName))
             return {};
 
         return fileName;
@@ -151,9 +292,8 @@ namespace
             return;
         }
 
-        g_renderSettings.PanX = 0.0f;
-        g_renderSettings.PanZ = 0.0f;
-        g_renderSettings.Zoom = 1.0f;
+        RefreshHeightStats();
+        ResetCameraToHeightmap();
         g_isDirty = true;
 
         SetStatus(
@@ -168,6 +308,11 @@ namespace
     {
         if (path.empty())
             return;
+
+        SelectFormatFromPath(path);
+
+        if (g_autoDetectSquareSize)
+            AutoDetectRawDimensions(path, false);
 
         StalkerOnline::Editor::RawHeightmapOptions options;
         options.Width = g_rawWidth;
@@ -185,9 +330,8 @@ namespace
         CopyToBuffer(g_rawPath, sizeof(g_rawPath), path);
         CopyToBuffer(g_savePath, sizeof(g_savePath), path);
 
-        g_renderSettings.PanX = 0.0f;
-        g_renderSettings.PanZ = 0.0f;
-        g_renderSettings.Zoom = 1.0f;
+        RefreshHeightStats();
+        ResetCameraToHeightmap();
         g_isDirty = false;
 
         SetStatus("Loaded RAW heightmap: " + path);
@@ -215,23 +359,96 @@ namespace
         SetStatus("Saved RAW heightmap: " + path);
     }
 
-    float CalculateOrthoWidth(std::uint32_t viewportWidth, std::uint32_t viewportHeight)
+    void LoadSpeedTreeAsset(const std::string& path)
     {
-        if (!g_heightmap.IsValid())
-            return 1.0f;
+        if (path.empty())
+        {
+            SetStatus("SpeedTree load failed: SRT path is empty.");
+            return;
+        }
 
-        const float aspectRatio = viewportHeight == 0
-            ? 1.0f
-            : static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
+        g_speedTreeAsset = StalkerOnline::SpeedTreeIntegration::TryLoadTreeAsset(path);
 
-        const float terrainWidth = static_cast<float>(g_heightmap.GetWidth() - 1) * g_renderSettings.CellSize;
-        const float terrainHeight = static_cast<float>(g_heightmap.GetHeight() - 1) * g_renderSettings.CellSize;
+        if (!g_speedTreeAsset.Loaded)
+        {
+            SetStatus("SpeedTree load failed: " + g_speedTreeAsset.ErrorMessage);
+            return;
+        }
 
-        const float fittedWidth = std::max(
-            terrainWidth * 1.15f,
-            terrainHeight * 1.15f * aspectRatio);
+        CopyToBuffer(g_speedTreeAssetPath, sizeof(g_speedTreeAssetPath), path);
+        SetStatus("Loaded SpeedTree asset: " + path);
+    }
 
-        return std::max(1.0f, fittedWidth / std::clamp(g_renderSettings.Zoom, 0.05f, 64.0f));
+    struct EditorVector3
+    {
+        float X = 0.0f;
+        float Y = 0.0f;
+        float Z = 0.0f;
+    };
+
+    float DegToRad(float degrees)
+    {
+        return degrees * 3.14159265358979323846f / 180.0f;
+    }
+
+    EditorVector3 Add(EditorVector3 a, EditorVector3 b)
+    {
+        return { a.X + b.X, a.Y + b.Y, a.Z + b.Z };
+    }
+
+    EditorVector3 Scale(EditorVector3 vector, float scale)
+    {
+        return { vector.X * scale, vector.Y * scale, vector.Z * scale };
+    }
+
+    EditorVector3 Cross(EditorVector3 a, EditorVector3 b)
+    {
+        return
+        {
+            a.Y * b.Z - a.Z * b.Y,
+            a.Z * b.X - a.X * b.Z,
+            a.X * b.Y - a.Y * b.X
+        };
+    }
+
+    EditorVector3 Normalize(EditorVector3 vector)
+    {
+        const float length = std::sqrt(vector.X * vector.X + vector.Y * vector.Y + vector.Z * vector.Z);
+
+        if (length <= 0.00001f)
+            return {};
+
+        return
+        {
+            vector.X / length,
+            vector.Y / length,
+            vector.Z / length
+        };
+    }
+
+    EditorVector3 CameraForward()
+    {
+        const float yaw = DegToRad(g_renderSettings.CameraYaw);
+        const float pitch = DegToRad(std::clamp(g_renderSettings.CameraPitch, -89.0f, 89.0f));
+        const float cosPitch = std::cos(pitch);
+
+        return Normalize(
+            {
+                std::sin(yaw) * cosPitch,
+                std::sin(pitch),
+                std::cos(yaw) * cosPitch
+            });
+    }
+
+    EditorVector3 CameraRight()
+    {
+        constexpr EditorVector3 worldUp{ 0.0f, 1.0f, 0.0f };
+        return Normalize(Cross(worldUp, CameraForward()));
+    }
+
+    EditorVector3 CameraUp()
+    {
+        return Normalize(Cross(CameraForward(), CameraRight()));
     }
 
     bool ScreenToHeightmap(
@@ -255,18 +472,37 @@ namespace
         if (localX < 0.0f || localY < 0.0f || localX >= static_cast<float>(viewportWidth) || localY >= static_cast<float>(viewportHeight))
             return false;
 
-        const float aspectRatio = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
-        const float orthoWidth = CalculateOrthoWidth(viewportWidth, viewportHeight);
-        const float orthoHeight = orthoWidth / aspectRatio;
-
         const float ndcX = localX / static_cast<float>(viewportWidth) * 2.0f - 1.0f;
         const float ndcY = 1.0f - localY / static_cast<float>(viewportHeight) * 2.0f;
 
-        const float worldX = g_renderSettings.PanX + ndcX * orthoWidth * 0.5f;
-        const float worldZ = g_renderSettings.PanZ + ndcY * orthoHeight * 0.5f;
+        constexpr float fovRadians = 60.0f * 3.14159265358979323846f / 180.0f;
+        const float aspectRatio = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
+        const float tanHalfFov = std::tan(fovRadians * 0.5f);
 
-        *outHeightmapX = worldX / g_renderSettings.CellSize + static_cast<float>(g_heightmap.GetWidth() - 1) * 0.5f;
-        *outHeightmapY = worldZ / g_renderSettings.CellSize + static_cast<float>(g_heightmap.GetHeight() - 1) * 0.5f;
+        const EditorVector3 forward = CameraForward();
+        const EditorVector3 right = CameraRight();
+        const EditorVector3 up = CameraUp();
+
+        const EditorVector3 rayDirection = Normalize(
+            Add(
+                forward,
+                Add(
+                    Scale(right, ndcX * aspectRatio * tanHalfFov),
+                    Scale(up, ndcY * tanHalfFov))));
+
+        if (std::fabs(rayDirection.Y) <= 0.00001f)
+            return false;
+
+        const float t = -g_renderSettings.CameraY / rayDirection.Y;
+
+        if (t <= 0.0f)
+            return false;
+
+        const float worldX = g_renderSettings.CameraX + rayDirection.X * t;
+        const float worldZ = g_renderSettings.CameraZ + rayDirection.Z * t;
+
+        *outHeightmapX = worldX / g_renderSettings.CellSizeX + static_cast<float>(g_heightmap.GetWidth() - 1) * 0.5f;
+        *outHeightmapY = worldZ / g_renderSettings.CellSizeY + static_cast<float>(g_heightmap.GetHeight() - 1) * 0.5f;
 
         return
             *outHeightmapX >= 0.0f &&
@@ -307,30 +543,55 @@ namespace
 
             if (ImGui::IsKeyPressed(ImGuiKey_4))
                 g_brushModeIndex = 3;
+
+            if (ImGui::IsKeyPressed(ImGuiKey_F))
+                ResetCameraToHeightmap();
+
+            EditorVector3 moveDirection{};
+
+            if (ImGui::IsKeyDown(ImGuiKey_W))
+                moveDirection = Add(moveDirection, CameraForward());
+
+            if (ImGui::IsKeyDown(ImGuiKey_S))
+                moveDirection = Add(moveDirection, Scale(CameraForward(), -1.0f));
+
+            if (ImGui::IsKeyDown(ImGuiKey_D))
+                moveDirection = Add(moveDirection, CameraRight());
+
+            if (ImGui::IsKeyDown(ImGuiKey_A))
+                moveDirection = Add(moveDirection, Scale(CameraRight(), -1.0f));
+
+            if (ImGui::IsKeyDown(ImGuiKey_E))
+                moveDirection.Y += 1.0f;
+
+            if (ImGui::IsKeyDown(ImGuiKey_Q))
+                moveDirection.Y -= 1.0f;
+
+            moveDirection = Normalize(moveDirection);
+
+            const float speedMultiplier = io.KeyShift ? 4.0f : 1.0f;
+            const float cameraStep = g_renderSettings.CameraSpeed * speedMultiplier * (std::max)(io.DeltaTime, 0.001f);
+
+            g_renderSettings.CameraX += moveDirection.X * cameraStep;
+            g_renderSettings.CameraY += moveDirection.Y * cameraStep;
+            g_renderSettings.CameraZ += moveDirection.Z * cameraStep;
         }
 
         if (!io.WantCaptureMouse)
         {
-            if (io.MouseWheel != 0.0f)
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Right))
             {
-                const float zoomFactor = io.MouseWheel > 0.0f ? 1.12f : 0.89f;
-                g_renderSettings.Zoom = std::clamp(g_renderSettings.Zoom * zoomFactor, 0.05f, 64.0f);
+                g_renderSettings.CameraYaw += io.MouseDelta.x * 0.14f;
+                g_renderSettings.CameraPitch = std::clamp(
+                    g_renderSettings.CameraPitch - io.MouseDelta.y * 0.14f,
+                    -85.0f,
+                    85.0f);
             }
 
-            if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle))
+            if (io.MouseWheel != 0.0f)
             {
-                const std::uint32_t viewportWidth = g_renderer->GetWidth();
-                const std::uint32_t viewportHeight = g_renderer->GetHeight();
-
-                if (viewportWidth > 0 && viewportHeight > 0)
-                {
-                    const float aspectRatio = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
-                    const float orthoWidth = CalculateOrthoWidth(viewportWidth, viewportHeight);
-                    const float orthoHeight = orthoWidth / aspectRatio;
-
-                    g_renderSettings.PanX -= io.MouseDelta.x / static_cast<float>(viewportWidth) * orthoWidth;
-                    g_renderSettings.PanZ += io.MouseDelta.y / static_cast<float>(viewportHeight) * orthoHeight;
-                }
+                const float speedFactor = io.MouseWheel > 0.0f ? 1.12f : 0.89f;
+                g_renderSettings.CameraSpeed = std::clamp(g_renderSettings.CameraSpeed * speedFactor, 50.0f, 1000000.0f);
             }
         }
 
@@ -346,10 +607,11 @@ namespace
                 heightmapY,
                 g_renderSettings.BrushRadiusCells,
                 g_brushStrength,
-                std::max(io.DeltaTime, 0.001f),
+                (std::max)(io.DeltaTime, 0.001f),
                 brushMode,
                 g_flattenHeight);
 
+            RefreshHeightStats();
             g_isDirty = true;
         }
     }
@@ -404,6 +666,11 @@ namespace
 
         ImGui::SameLine();
 
+        if (ImGui::Button("Reset Camera"))
+            ResetCameraToHeightmap();
+
+        ImGui::SameLine();
+
         ImGui::TextColored(
             g_isDirty ? ImVec4(0.92f, 0.68f, 0.22f, 1.0f) : ImVec4(0.55f, 0.75f, 0.45f, 1.0f),
             "%s",
@@ -436,18 +703,31 @@ namespace
 
         const char* formats[] =
         {
+            "UE5 .r16 / RAW16 unsigned LE",
             "8-bit unsigned",
             "16-bit unsigned LE",
             "32-bit float LE"
         };
 
         ImGui::Combo("RAW format", &g_rawFormatIndex, formats, IM_ARRAYSIZE(formats));
+        ImGui::Checkbox("Auto square size", &g_autoDetectSquareSize);
+
+        if (ImGui::Button("Detect Size From File"))
+            AutoDetectRawDimensions(g_rawPath, true);
 
         ImGui::Separator();
 
-        ImGui::DragFloat("Cell size", &g_renderSettings.CellSize, 1.0f, 1.0f, 1000.0f, "%.1f");
-        ImGui::DragFloat("Height scale", &g_renderSettings.HeightScale, 10.0f, 1.0f, 20000.0f, "%.1f");
+        ImGui::DragFloat("Scale X", &g_renderSettings.CellSizeX, 0.1f, 0.01f, 10000.0f, "%.6f");
+        ImGui::DragFloat("Scale Y", &g_renderSettings.CellSizeY, 0.1f, 0.01f, 10000.0f, "%.6f");
+
+        if (ImGui::DragFloat("UE Z scale", &g_ueZScale, 0.01f, 0.001f, 10000.0f, "%.6f"))
+            g_renderSettings.HeightScale = g_ueZScale * 512.0f;
+
+        if (ImGui::DragFloat("Height range", &g_renderSettings.HeightScale, 10.0f, 1.0f, 1000000.0f, "%.1f"))
+            g_ueZScale = g_renderSettings.HeightScale / 512.0f;
+
         ImGui::SliderInt("Render cells", &g_renderSettings.MaxRenderedCellsPerAxis, 32, 512);
+        ImGui::Checkbox("Normalize preview", &g_renderSettings.NormalizeHeightPreview);
         ImGui::Checkbox("Wireframe", &g_renderSettings.ShowWireframe);
 
         ImGui::Separator();
@@ -456,6 +736,16 @@ namespace
         {
             ImGui::Text("Loaded: %d x %d", g_heightmap.GetWidth(), g_heightmap.GetHeight());
             ImGui::Text("Format: %s", StalkerOnline::Editor::RawHeightFormatToText(FormatFromIndex(g_rawFormatIndex)));
+            ImGui::Text("Height min/max: %.6f / %.6f", g_heightMin, g_heightMax);
+
+            const float rawRange = g_heightMax - g_heightMin;
+
+            if (rawRange <= 0.000001f)
+            {
+                ImGui::TextColored(
+                    ImVec4(0.95f, 0.42f, 0.30f, 1.0f),
+                    "Heightmap looks flat or unreadable.");
+            }
         }
         else
         {
@@ -490,9 +780,13 @@ namespace
 
         ImGui::Separator();
 
-        ImGui::DragFloat("Zoom", &g_renderSettings.Zoom, 0.02f, 0.05f, 64.0f, "%.2f");
-        ImGui::DragFloat("Pan X", &g_renderSettings.PanX, 10.0f, -1000000.0f, 1000000.0f, "%.1f");
-        ImGui::DragFloat("Pan Z", &g_renderSettings.PanZ, 10.0f, -1000000.0f, 1000000.0f, "%.1f");
+        ImGui::DragFloat("Camera speed", &g_renderSettings.CameraSpeed, 100.0f, 50.0f, 1000000.0f, "%.1f");
+        ImGui::DragFloat3("Camera pos", &g_renderSettings.CameraX, 100.0f, -10000000.0f, 10000000.0f, "%.1f");
+        ImGui::DragFloat("Yaw", &g_renderSettings.CameraYaw, 0.25f, -3600.0f, 3600.0f, "%.1f");
+        ImGui::DragFloat("Pitch", &g_renderSettings.CameraPitch, 0.25f, -85.0f, 85.0f, "%.1f");
+
+        if (ImGui::Button("Reset Camera"))
+            ResetCameraToHeightmap();
 
         ImGui::Separator();
 
@@ -505,8 +799,87 @@ namespace
             ImGui::Text("Height: %.4f", g_heightmap.GetHeightNormalized(sampleX, sampleY));
         }
 
-        ImGui::TextColored(ImVec4(0.74f, 0.70f, 0.52f, 1.0f), "LMB sculpt | Shift+LMB lower | MMB pan | Wheel zoom");
-        ImGui::TextColored(ImVec4(0.74f, 0.70f, 0.52f, 1.0f), "Hotkeys: 1 Raise, 2 Lower, 3 Smooth, 4 Flatten");
+        ImGui::TextColored(ImVec4(0.74f, 0.70f, 0.52f, 1.0f), "LMB sculpt | Shift+LMB lower | RMB look | Wheel speed");
+        ImGui::TextColored(ImVec4(0.74f, 0.70f, 0.52f, 1.0f), "Camera: W/A/S/D, Q/E vertical, Shift faster, F reset");
+        ImGui::TextColored(ImVec4(0.74f, 0.70f, 0.52f, 1.0f), "Brush: 1 Raise, 2 Lower, 3 Smooth, 4 Flatten");
+
+        ImGui::End();
+    }
+
+    void DrawSpeedTreePanel()
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        const float width = 350.0f;
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x - width - 16.0f, viewport->Pos.y + 434.0f));
+        ImGui::SetNextWindowSize(ImVec2(width, 230.0f));
+
+        ImGui::Begin("SpeedTree", nullptr, ImGuiWindowFlags_NoCollapse);
+
+        const StalkerOnline::SpeedTreeIntegration::SdkStatus sdkStatus =
+            StalkerOnline::SpeedTreeIntegration::GetSdkStatus();
+
+        ImGui::TextColored(
+            sdkStatus.Available ? ImVec4(0.55f, 0.75f, 0.45f, 1.0f) : ImVec4(0.90f, 0.35f, 0.25f, 1.0f),
+            "%s",
+            sdkStatus.Available ? "SDK linked" : "SDK missing");
+
+        if (!sdkStatus.Version.empty())
+            ImGui::TextWrapped("%s", sdkStatus.Version.c_str());
+
+        if (!sdkStatus.CoordinateSystem.empty())
+            ImGui::Text("Coord: %s", sdkStatus.CoordinateSystem.c_str());
+
+        ImGui::Text(
+            "DX11 renderer: %s / %s",
+            sdkStatus.DirectX11RendererAvailable ? "linked" : "not linked",
+            sdkStatus.DirectX11RendererInitialized ? "initialized" : "not initialized");
+
+        ImGui::Separator();
+
+        ImGui::InputText("SRT path", g_speedTreeAssetPath, sizeof(g_speedTreeAssetPath));
+
+        if (ImGui::Button("Open SRT"))
+        {
+            const std::string path = ShowOpenSpeedTreeDialog();
+
+            if (!path.empty())
+                LoadSpeedTreeAsset(path);
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Load Path"))
+            LoadSpeedTreeAsset(g_speedTreeAssetPath);
+
+        ImGui::Separator();
+
+        if (g_speedTreeAsset.Loaded)
+        {
+            ImGui::Text("Height: %.3f", g_speedTreeAsset.Height);
+            ImGui::Text("Radius: %.3f", g_speedTreeAsset.Radius);
+            ImGui::Text(
+                "Render Interface: %s",
+                g_speedTreeAsset.RenderInterfaceInitialized ? "initialized" : "not initialized");
+
+            if (!g_speedTreeAsset.RenderInterfaceMessage.empty())
+                ImGui::TextWrapped("%s", g_speedTreeAsset.RenderInterfaceMessage.c_str());
+
+            ImGui::Text(
+                "Min: %.2f %.2f %.2f",
+                g_speedTreeAsset.MinBounds[0],
+                g_speedTreeAsset.MinBounds[1],
+                g_speedTreeAsset.MinBounds[2]);
+            ImGui::Text(
+                "Max: %.2f %.2f %.2f",
+                g_speedTreeAsset.MaxBounds[0],
+                g_speedTreeAsset.MaxBounds[1],
+                g_speedTreeAsset.MaxBounds[2]);
+        }
+        else if (!g_speedTreeAsset.ErrorMessage.empty())
+        {
+            ImGui::TextColored(ImVec4(0.90f, 0.35f, 0.25f, 1.0f), "%s", g_speedTreeAsset.ErrorMessage.c_str());
+        }
 
         ImGui::End();
     }
@@ -516,6 +889,7 @@ namespace
         DrawTopToolbar();
         DrawImportPanel();
         DrawSculptPanel();
+        DrawSpeedTreePanel();
     }
 }
 
@@ -621,6 +995,11 @@ int WINAPI wWinMain(
     ShowWindow(g_windowHandle, nCmdShow);
     UpdateWindow(g_windowHandle);
 
+    const StalkerOnline::SpeedTreeIntegration::Dx11InitializationResult speedTreeDx11Init =
+        StalkerOnline::SpeedTreeIntegration::InitializeDx11Renderer(
+            g_renderer->GetDevice(),
+            g_renderer->GetDeviceContext());
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
 
@@ -660,6 +1039,9 @@ int WINAPI wWinMain(
 
     CreateFlatLevel();
 
+    if (!speedTreeDx11Init.Success)
+        SetStatus(speedTreeDx11Init.Message);
+
     MSG message{};
 
     while (g_running.load())
@@ -685,7 +1067,7 @@ int WINAPI wWinMain(
 
         ImGui::Render();
 
-        const float clearColor[4] = { 0.020f, 0.024f, 0.020f, 1.0f };
+        const float clearColor[4] = { 0.055f, 0.070f, 0.060f, 1.0f };
 
         g_renderer->BeginFrame(clearColor);
 
