@@ -22,6 +22,9 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <memory>
 #include <string>
 
@@ -87,6 +90,7 @@ namespace
     float g_cameraZFar = 3000.0f;
     float g_timeOfDay = 12.0f;
     float g_editorSpeed = 5.0f;
+    bool g_autoLoadScaleText = true;
 
     float g_terrainWorldSizeMetersX = 512.0f;
     float g_terrainWorldSizeMetersY = 512.0f;
@@ -96,6 +100,7 @@ namespace
     float g_heightMax = 1.0f;
 
     StalkerOnline::SpeedTreeIntegration::TreeAssetInfo g_speedTreeAsset;
+    void ResetCameraToHeightmap();
     void LoadRawHeightmap(const std::string& path);
     void CreatePreviewIslandLevel();
 
@@ -344,6 +349,27 @@ namespace
         return fileName;
     }
 
+    std::string ShowOpenScaleTextDialog()
+    {
+        char fileName[MAX_PATH] = {};
+
+        OPENFILENAMEA openFileName{};
+        openFileName.lStructSize = sizeof(openFileName);
+        openFileName.hwndOwner = g_windowHandle;
+        openFileName.lpstrFilter =
+            "Scale Text (*.txt;*.log)\0*.txt;*.log\0"
+            "All Files (*.*)\0*.*\0";
+        openFileName.lpstrFile = fileName;
+        openFileName.nMaxFile = MAX_PATH;
+        openFileName.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        openFileName.lpstrDefExt = "txt";
+
+        if (!GetOpenFileNameA(&openFileName))
+            return {};
+
+        return fileName;
+    }
+
     void SyncSceneTerrainInfo()
     {
         const int terrainWidth = g_heightmap.IsValid() ? g_heightmap.GetWidth() : g_rawWidth;
@@ -356,6 +382,208 @@ namespace
             g_renderSettings.CellSizeX,
             g_renderSettings.CellSizeY,
             g_renderSettings.HeightScale);
+    }
+
+    bool ReadWholeTextFile(const std::string& path, std::string* outText)
+    {
+        if (outText == nullptr || path.empty())
+            return false;
+
+        std::ifstream file(path, std::ios::binary);
+
+        if (!file.is_open())
+            return false;
+
+        std::ostringstream stream;
+        stream << file.rdbuf();
+
+        *outText = stream.str();
+        return true;
+    }
+
+    bool FileExists(const std::string& path)
+    {
+        if (path.empty())
+            return false;
+
+        std::ifstream file(path, std::ios::binary);
+        return file.good();
+    }
+
+    std::string ReplaceExtension(const std::string& path, const std::string& newExtension)
+    {
+        const std::size_t slash = path.find_last_of("\\/");
+        const std::size_t dot = path.find_last_of('.');
+
+        if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+            return path + newExtension;
+
+        return path.substr(0, dot) + newExtension;
+    }
+
+    bool ParseThreeFloatsFromText(const std::string& text, float* outX, float* outY, float* outZ)
+    {
+        if (outX == nullptr || outY == nullptr || outZ == nullptr)
+            return false;
+
+        std::string source;
+
+        const std::size_t resultScalePos = text.find("Result scale");
+        const std::size_t scalePos = resultScalePos != std::string::npos
+            ? resultScalePos
+            : text.find("scale");
+
+        if (scalePos != std::string::npos)
+        {
+            const std::size_t openBracket = text.find('[', scalePos);
+            const std::size_t closeBracket = openBracket != std::string::npos
+                ? text.find(']', openBracket + 1)
+                : std::string::npos;
+
+            if (openBracket != std::string::npos && closeBracket != std::string::npos && closeBracket > openBracket)
+                source = text.substr(openBracket + 1, closeBracket - openBracket - 1);
+        }
+
+        if (source.empty())
+            source = text;
+
+        std::string normalized;
+        normalized.reserve(source.size());
+
+        for (char c : source)
+        {
+            const bool numberChar =
+                (c >= '0' && c <= '9') ||
+                c == '-' ||
+                c == '+' ||
+                c == '.' ||
+                c == 'e' ||
+                c == 'E';
+
+            normalized.push_back(numberChar ? c : ' ');
+        }
+
+        float values[3]{};
+        int valueCount = 0;
+
+        const char* cursor = normalized.c_str();
+
+        while (*cursor != '\0' && valueCount < 3)
+        {
+            char* endPointer = nullptr;
+            const float value = std::strtof(cursor, &endPointer);
+
+            if (endPointer == cursor)
+            {
+                ++cursor;
+                continue;
+            }
+
+            values[valueCount++] = value;
+            cursor = endPointer;
+        }
+
+        if (valueCount < 3)
+            return false;
+
+        *outX = values[0];
+        *outY = values[1];
+        *outZ = values[2];
+
+        return true;
+    }
+
+    void SetTerrainImportScale(
+        float scaleX,
+        float scaleY,
+        float scaleZ,
+        bool resetCamera,
+        bool markDirty)
+    {
+        g_renderSettings.CellSizeX = std::clamp(scaleX, 0.001f, 100000.0f);
+        g_renderSettings.CellSizeY = std::clamp(scaleY, 0.001f, 100000.0f);
+
+        g_ueZScale = std::clamp(scaleZ, 0.001f, 100000.0f);
+        g_renderSettings.HeightScale = g_ueZScale * 512.0f;
+
+        SyncSceneTerrainInfo();
+
+        if (resetCamera && g_heightmap.IsValid())
+            ResetCameraToHeightmap();
+
+        if (markDirty)
+            g_isDirty = true;
+
+        SetStatus(
+            "Applied terrain scale: X=" +
+            std::to_string(g_renderSettings.CellSizeX) +
+            " Y=" +
+            std::to_string(g_renderSettings.CellSizeY) +
+            " Z=" +
+            std::to_string(g_ueZScale));
+    }
+
+    void ApplyCurrentTerrainImportScale(bool resetCamera)
+    {
+        SetTerrainImportScale(
+            g_renderSettings.CellSizeX,
+            g_renderSettings.CellSizeY,
+            g_ueZScale,
+            resetCamera,
+            true);
+    }
+
+    bool ApplyScaleFromTextFile(const std::string& path, bool resetCamera, bool markDirty)
+    {
+        std::string text;
+
+        if (!ReadWholeTextFile(path, &text))
+        {
+            SetStatus("Scale load failed: cannot read file.");
+            return false;
+        }
+
+        float scaleX = 0.0f;
+        float scaleY = 0.0f;
+        float scaleZ = 0.0f;
+
+        if (!ParseThreeFloatsFromText(text, &scaleX, &scaleY, &scaleZ))
+        {
+            SetStatus("Scale load failed: cannot find 3 floats like Result scale [X,Y,Z].");
+            return false;
+        }
+
+        SetTerrainImportScale(scaleX, scaleY, scaleZ, resetCamera, markDirty);
+        return true;
+    }
+
+    bool TryAutoApplyScaleTextForRaw(const std::string& rawPath)
+    {
+        if (rawPath.empty())
+            return false;
+
+        const std::string sameNameTxt = ReplaceExtension(rawPath, ".txt");
+        const std::string sameNameLog = ReplaceExtension(rawPath, ".log");
+        const std::string rawPlusTxt = rawPath + ".txt";
+        const std::string rawPlusLog = rawPath + ".log";
+
+        const std::string candidates[]
+        {
+            sameNameTxt,
+            sameNameLog,
+            rawPlusTxt,
+            rawPlusLog
+        };
+
+        for (const std::string& candidate : candidates)
+        {
+            if (!FileExists(candidate))
+                continue;
+
+            return ApplyScaleFromTextFile(candidate, true, false);
+        }
+
+        return false;
     }
 
     void SyncTerrainWorldSizeFromSettings()
@@ -741,9 +969,16 @@ namespace
         ResetCameraToHeightmap();
         g_isDirty = false;
         SyncSceneTerrainInfo();
-        SyncTerrainWorldSizeFromSettings();
 
-        SetStatus("Loaded RAW heightmap: " + path);
+        if (g_autoLoadScaleText)
+        {
+            if (!TryAutoApplyScaleTextForRaw(path))
+                SetStatus("Loaded RAW heightmap: " + path + " | No scale txt/log found.");
+        }
+        else
+        {
+            SetStatus("Loaded RAW heightmap: " + path);
+        }
     }
 
     void SaveRawHeightmap(const std::string& path)
@@ -1410,25 +1645,47 @@ namespace
             ImVec4(0.74f, 0.70f, 0.52f, 1.0f),
             "Advanced cell size.");
 
-        if (ImGui::DragFloat("Cell X cm", &g_renderSettings.CellSizeX, 0.1f, 0.01f, 10000.0f, "%.6f"))
-        {
-            SyncTerrainWorldSizeFromSettings();
-            SyncSceneTerrainInfo();
-            g_isDirty = true;
-        }
+        ImGui::Separator();
 
-        if (ImGui::DragFloat("Cell Y cm", &g_renderSettings.CellSizeY, 0.1f, 0.01f, 10000.0f, "%.6f"))
-        {
-            SyncTerrainWorldSizeFromSettings();
-            SyncSceneTerrainInfo();
-            g_isDirty = true;
-        }
+        ImGui::TextColored(
+            ImVec4(0.90f, 0.78f, 0.45f, 1.0f),
+            "Terrain scale for current map.");
 
-        if (ImGui::DragFloat("UE Z scale", &g_ueZScale, 0.01f, 0.001f, 10000.0f, "%.6f"))
-            g_renderSettings.HeightScale = g_ueZScale * 512.0f;
+        ImGui::Checkbox("Auto load scale txt/log near RAW", &g_autoLoadScaleText);
 
-        if (ImGui::DragFloat("Height range", &g_renderSettings.HeightScale, 10.0f, 1.0f, 1000000.0f, "%.1f"))
+        ImGui::SetNextItemWidth(230.0f);
+        ImGui::InputFloat("Scale X", &g_renderSettings.CellSizeX, 0.01f, 1.0f, "%.6f");
+
+        ImGui::SetNextItemWidth(230.0f);
+        ImGui::InputFloat("Scale Y", &g_renderSettings.CellSizeY, 0.01f, 1.0f, "%.6f");
+
+        ImGui::SetNextItemWidth(230.0f);
+        ImGui::InputFloat("Scale Z", &g_ueZScale, 0.01f, 1.0f, "%.6f");
+
+        ImGui::SetNextItemWidth(230.0f);
+
+        if (ImGui::InputFloat("Height range cm", &g_renderSettings.HeightScale, 10.0f, 100.0f, "%.3f"))
             g_ueZScale = g_renderSettings.HeightScale / 512.0f;
+
+        if (ImGui::Button("Apply Scale"))
+            ApplyCurrentTerrainImportScale(false);
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Apply Scale + Reset Camera"))
+            ApplyCurrentTerrainImportScale(true);
+
+        if (ImGui::Button("Load Scale TXT/LOG"))
+        {
+            const std::string scalePath = ShowOpenScaleTextDialog();
+
+            if (!scalePath.empty())
+                ApplyScaleFromTextFile(scalePath, true, true);
+        }
+
+        ImGui::TextColored(
+            ImVec4(0.74f, 0.70f, 0.52f, 1.0f),
+            "Result scale [X,Y,Z] -> Scale X/Y/Z. No hardcoded map presets.");
 
         ImGui::SliderInt("Render cells", &g_renderSettings.MaxRenderedCellsPerAxis, 32, 512);
         ImGui::Checkbox("Normalize preview", &g_renderSettings.NormalizeHeightPreview);
