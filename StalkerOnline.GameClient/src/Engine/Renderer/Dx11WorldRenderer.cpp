@@ -153,53 +153,438 @@ namespace StalkerOnline::Engine
             AddQuad(vertices, p000, p100, p101, p001, bottomColor);
         }
 
-        void AddGrid(std::vector<Dx11WorldRenderer::Vertex>& vertices)
+        Float3 TransformLocalPoint(
+            const Float3& center,
+            const Float3& local,
+            float yawRadians
+        )
         {
-            constexpr int halfLineCount = 30;
-            constexpr float step = 1.0f;
+            const float cosYaw = std::cos(yawRadians);
+            const float sinYaw = std::sin(yawRadians);
+
+            return
+            {
+                center.X + local.X * cosYaw + local.Z * sinYaw,
+                center.Y + local.Y,
+                center.Z - local.X * sinYaw + local.Z * cosYaw
+            };
+        }
+
+        void AddOrientedBox(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            const Float3& center,
+            const Float3& halfSize,
+            float yawRadians,
+            const Color& baseColor
+        )
+        {
+            const Float3 p000 = TransformLocalPoint(center, Float3{ -halfSize.X, -halfSize.Y, -halfSize.Z }, yawRadians);
+            const Float3 p001 = TransformLocalPoint(center, Float3{ -halfSize.X, -halfSize.Y, halfSize.Z }, yawRadians);
+            const Float3 p010 = TransformLocalPoint(center, Float3{ -halfSize.X, halfSize.Y, -halfSize.Z }, yawRadians);
+            const Float3 p011 = TransformLocalPoint(center, Float3{ -halfSize.X, halfSize.Y, halfSize.Z }, yawRadians);
+
+            const Float3 p100 = TransformLocalPoint(center, Float3{ halfSize.X, -halfSize.Y, -halfSize.Z }, yawRadians);
+            const Float3 p101 = TransformLocalPoint(center, Float3{ halfSize.X, -halfSize.Y, halfSize.Z }, yawRadians);
+            const Float3 p110 = TransformLocalPoint(center, Float3{ halfSize.X, halfSize.Y, -halfSize.Z }, yawRadians);
+            const Float3 p111 = TransformLocalPoint(center, Float3{ halfSize.X, halfSize.Y, halfSize.Z }, yawRadians);
+
+            const Color topColor = ScaleColor(baseColor, 1.22f);
+            const Color frontColor = ScaleColor(baseColor, 1.03f);
+            const Color sideColor = ScaleColor(baseColor, 0.84f);
+            const Color bottomColor = ScaleColor(baseColor, 0.55f);
+
+            AddQuad(vertices, p001, p101, p111, p011, frontColor);
+            AddQuad(vertices, p100, p000, p010, p110, sideColor);
+
+            AddQuad(vertices, p000, p001, p011, p010, sideColor);
+            AddQuad(vertices, p101, p100, p110, p111, sideColor);
+
+            AddQuad(vertices, p010, p011, p111, p110, topColor);
+            AddQuad(vertices, p000, p100, p101, p001, bottomColor);
+        }
+
+        float TerrainHeight(float x, float z)
+        {
+            return
+                std::sin(x * 0.18f) * 0.06f +
+                std::cos(z * 0.15f) * 0.05f +
+                std::sin((x + z) * 0.07f) * 0.04f;
+        }
+
+        Color TerrainColor(float x, float z)
+        {
+            const float variation =
+                std::sin(x * 0.41f + z * 0.17f) * 0.5f +
+                std::cos(x * 0.13f - z * 0.37f) * 0.5f;
+
+            const float light = std::clamp(0.84f + variation * 0.10f, 0.68f, 0.98f);
+
+            return
+            {
+                0.145f * light,
+                0.165f * light,
+                0.105f * light,
+                1.0f
+            };
+        }
+
+        void AddTerrain(std::vector<Dx11WorldRenderer::Vertex>& vertices)
+        {
+            constexpr int halfCellCount = 24;
+            constexpr float cellSize = 2.0f;
+
+            for (int z = -halfCellCount; z < halfCellCount; ++z)
+            {
+                for (int x = -halfCellCount; x < halfCellCount; ++x)
+                {
+                    const float x0 = static_cast<float>(x) * cellSize;
+                    const float x1 = static_cast<float>(x + 1) * cellSize;
+                    const float z0 = static_cast<float>(z) * cellSize;
+                    const float z1 = static_cast<float>(z + 1) * cellSize;
+
+                    const Float3 p00{ x0, TerrainHeight(x0, z0), z0 };
+                    const Float3 p10{ x1, TerrainHeight(x1, z0), z0 };
+                    const Float3 p11{ x1, TerrainHeight(x1, z1), z1 };
+                    const Float3 p01{ x0, TerrainHeight(x0, z1), z1 };
+
+                    AddQuad(
+                        vertices,
+                        p00,
+                        p10,
+                        p11,
+                        p01,
+                        TerrainColor((x0 + x1) * 0.5f, (z0 + z1) * 0.5f)
+                    );
+                }
+            }
+        }
+
+        void AddRoad(std::vector<Dx11WorldRenderer::Vertex>& vertices)
+        {
+            constexpr int segmentCount = 46;
+            constexpr float segmentLength = 2.0f;
+            constexpr float y = 0.045f;
+
+            for (int i = -segmentCount / 2; i < segmentCount / 2; ++i)
+            {
+                const float z0 = static_cast<float>(i) * segmentLength;
+                const float z1 = static_cast<float>(i + 1) * segmentLength;
+                const float bend = std::sin(static_cast<float>(i) * 0.22f) * 0.75f;
+                const float nextBend = std::sin(static_cast<float>(i + 1) * 0.22f) * 0.75f;
+                const float width = 3.2f + std::sin(static_cast<float>(i) * 0.61f) * 0.25f;
+
+                const Color roadColor =
+                {
+                    0.225f,
+                    0.205f + (i % 3 == 0 ? 0.014f : 0.0f),
+                    0.155f,
+                    1.0f
+                };
+
+                AddQuad(
+                    vertices,
+                    Float3{ bend - width, y, z0 },
+                    Float3{ bend + width, y, z0 },
+                    Float3{ nextBend + width, y, z1 },
+                    Float3{ nextBend - width, y, z1 },
+                    roadColor
+                );
+            }
+
+            AddQuad(
+                vertices,
+                Float3{ -23.0f, y + 0.005f, 10.1f },
+                Float3{ 23.0f, y + 0.005f, 10.1f },
+                Float3{ 23.0f, y + 0.005f, 14.3f },
+                Float3{ -23.0f, y + 0.005f, 14.3f },
+                Color{ 0.190f, 0.180f, 0.135f, 1.0f }
+            );
+        }
+
+        void AddGroundDisc(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            const Float3& center,
+            float radius,
+            const Color& color
+        )
+        {
+            constexpr int segmentCount = 48;
+
+            for (int i = 0; i < segmentCount; ++i)
+            {
+                const float angleA = static_cast<float>(i) / static_cast<float>(segmentCount) * Pi * 2.0f;
+                const float angleB = static_cast<float>(i + 1) / static_cast<float>(segmentCount) * Pi * 2.0f;
+
+                const Float3 pointA
+                {
+                    center.X + std::cos(angleA) * radius,
+                    center.Y,
+                    center.Z + std::sin(angleA) * radius
+                };
+
+                const Float3 pointB
+                {
+                    center.X + std::cos(angleB) * radius,
+                    center.Y,
+                    center.Z + std::sin(angleB) * radius
+                };
+
+                AddTriangle(vertices, center, pointA, pointB, color);
+            }
+        }
+
+        void AddRuinBlock(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            const Float3& origin
+        )
+        {
+            const Color concrete{ 0.315f, 0.330f, 0.300f, 1.0f };
+            const Color rust{ 0.355f, 0.175f, 0.095f, 1.0f };
+
+            AddCube(vertices, Float3{ origin.X - 2.7f, origin.Y + 1.25f, origin.Z }, Float3{ 0.22f, 1.25f, 2.8f }, concrete);
+            AddCube(vertices, Float3{ origin.X + 2.7f, origin.Y + 1.00f, origin.Z - 0.45f }, Float3{ 0.22f, 1.00f, 2.15f }, concrete);
+            AddCube(vertices, Float3{ origin.X, origin.Y + 1.05f, origin.Z - 2.7f }, Float3{ 2.7f, 1.05f, 0.22f }, concrete);
+
+            AddCube(vertices, Float3{ origin.X - 0.9f, origin.Y + 0.25f, origin.Z + 1.6f }, Float3{ 0.85f, 0.25f, 0.55f }, ScaleColor(concrete, 0.65f));
+            AddCube(vertices, Float3{ origin.X + 1.5f, origin.Y + 0.35f, origin.Z + 1.9f }, Float3{ 0.55f, 0.35f, 0.45f }, ScaleColor(concrete, 0.72f));
+
+            AddCube(vertices, Float3{ origin.X + 0.6f, origin.Y + 1.9f, origin.Z - 2.95f }, Float3{ 0.12f, 0.12f, 0.8f }, rust);
+            AddCube(vertices, Float3{ origin.X + 1.7f, origin.Y + 1.65f, origin.Z - 2.95f }, Float3{ 0.10f, 0.10f, 0.7f }, rust);
+        }
+
+        void AddFenceLine(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            float x,
+            float zStart,
+            float zEnd
+        )
+        {
+            const Color postColor{ 0.300f, 0.255f, 0.185f, 1.0f };
+            const Color railColor{ 0.235f, 0.215f, 0.160f, 1.0f };
+
+            const float step = zStart < zEnd ? 3.0f : -3.0f;
+
+            for (float z = zStart; (step > 0.0f ? z <= zEnd : z >= zEnd); z += step)
+            {
+                AddCube(vertices, Float3{ x, 0.55f, z }, Float3{ 0.10f, 0.55f, 0.10f }, postColor);
+            }
+
+            const float centerZ = (zStart + zEnd) * 0.5f;
+            const float halfZ = std::fabs(zEnd - zStart) * 0.5f;
+
+            AddCube(vertices, Float3{ x, 0.82f, centerZ }, Float3{ 0.07f, 0.07f, halfZ }, railColor);
+            AddCube(vertices, Float3{ x, 0.42f, centerZ }, Float3{ 0.06f, 0.06f, halfZ }, ScaleColor(railColor, 0.82f));
+        }
+
+        void AddDeadTree(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            const Float3& root,
+            float yawRadians,
+            float scale
+        )
+        {
+            const Color bark{ 0.185f, 0.140f, 0.095f, 1.0f };
+            const Color branch{ 0.150f, 0.120f, 0.085f, 1.0f };
+
+            AddOrientedBox(
+                vertices,
+                Float3{ root.X, root.Y + 1.05f * scale, root.Z },
+                Float3{ 0.13f * scale, 1.05f * scale, 0.13f * scale },
+                yawRadians + 0.10f,
+                bark
+            );
+
+            AddOrientedBox(
+                vertices,
+                Float3{ root.X + std::sin(yawRadians) * 0.45f * scale, root.Y + 2.0f * scale, root.Z + std::cos(yawRadians) * 0.45f * scale },
+                Float3{ 0.08f * scale, 0.55f * scale, 0.08f * scale },
+                yawRadians + 0.65f,
+                branch
+            );
+
+            AddOrientedBox(
+                vertices,
+                Float3{ root.X - std::sin(yawRadians) * 0.35f * scale, root.Y + 1.65f * scale, root.Z - std::cos(yawRadians) * 0.35f * scale },
+                Float3{ 0.07f * scale, 0.48f * scale, 0.07f * scale },
+                yawRadians - 0.85f,
+                branch
+            );
+        }
+
+        void AddAnomaly(
+            std::vector<Dx11WorldRenderer::Vertex>& triangleVertices,
+            std::vector<Dx11WorldRenderer::Vertex>& lineVertices,
+            const Float3& center
+        )
+        {
+            AddGroundDisc(
+                triangleVertices,
+                Float3{ center.X, center.Y + 0.075f, center.Z },
+                2.6f,
+                Color{ 0.090f, 0.170f, 0.150f, 1.0f }
+            );
+
+            AddGroundDisc(
+                triangleVertices,
+                Float3{ center.X, center.Y + 0.082f, center.Z },
+                1.25f,
+                Color{ 0.170f, 0.365f, 0.315f, 1.0f }
+            );
+
+            const Color lineColor{ 0.40f, 0.86f, 0.68f, 1.0f };
+
+            for (int i = 0; i < 8; ++i)
+            {
+                const float angle = static_cast<float>(i) / 8.0f * Pi * 2.0f;
+                const float radius = 1.3f + (i % 2 == 0 ? 0.4f : 0.0f);
+
+                const Float3 base
+                {
+                    center.X + std::cos(angle) * radius,
+                    center.Y + 0.14f,
+                    center.Z + std::sin(angle) * radius
+                };
+
+                AddLine(
+                    lineVertices,
+                    base,
+                    Float3{ center.X, center.Y + 1.7f, center.Z },
+                    lineColor
+                );
+            }
+        }
+
+        void AddSectorMarkers(std::vector<Dx11WorldRenderer::Vertex>& vertices)
+        {
+            constexpr int halfLineCount = 4;
+            constexpr float step = 10.0f;
             constexpr float halfSize = static_cast<float>(halfLineCount) * step;
 
-            const Color gridColor{ 0.18f, 0.22f, 0.18f, 1.0f };
-            const Color centerColor{ 0.32f, 0.42f, 0.32f, 1.0f };
-            const Color xAxisColor{ 0.55f, 0.18f, 0.16f, 1.0f };
-            const Color zAxisColor{ 0.18f, 0.32f, 0.55f, 1.0f };
+            const Color markerColor{ 0.135f, 0.165f, 0.135f, 1.0f };
+            const Color centerColor{ 0.250f, 0.320f, 0.240f, 1.0f };
 
             for (int i = -halfLineCount; i <= halfLineCount; ++i)
             {
                 const float value = static_cast<float>(i) * step;
+                const Color& color = i == 0 ? centerColor : markerColor;
 
-                const Color& lineColor = (i == 0) ? centerColor : gridColor;
-
-                AddLine(
-                    vertices,
-                    Float3{ -halfSize, 0.0f, value },
-                    Float3{ halfSize, 0.0f, value },
-                    lineColor
-                );
-
-                AddLine(
-                    vertices,
-                    Float3{ value, 0.0f, -halfSize },
-                    Float3{ value, 0.0f, halfSize },
-                    lineColor
-                );
+                AddLine(vertices, Float3{ -halfSize, 0.09f, value }, Float3{ halfSize, 0.09f, value }, color);
+                AddLine(vertices, Float3{ value, 0.09f, -halfSize }, Float3{ value, 0.09f, halfSize }, color);
             }
+        }
 
-            AddLine(
-                vertices,
-                Float3{ -halfSize, 0.025f, 0.0f },
-                Float3{ halfSize, 0.025f, 0.0f },
-                xAxisColor
+        void AddWorldScene(
+            std::vector<Dx11WorldRenderer::Vertex>& triangleVertices,
+            std::vector<Dx11WorldRenderer::Vertex>& lineVertices
+        )
+        {
+            AddTerrain(triangleVertices);
+            AddRoad(triangleVertices);
+
+            AddRuinBlock(triangleVertices, Float3{ -10.0f, 0.0f, 14.0f });
+            AddRuinBlock(triangleVertices, Float3{ 13.0f, 0.0f, -11.0f });
+
+            AddFenceLine(triangleVertices, -5.4f, -20.0f, 4.0f);
+            AddFenceLine(triangleVertices, 5.8f, -18.0f, 6.0f);
+
+            AddDeadTree(triangleVertices, Float3{ -15.0f, 0.0f, -7.0f }, 0.45f, 1.0f);
+            AddDeadTree(triangleVertices, Float3{ -19.0f, 0.0f, 17.0f }, -0.95f, 0.75f);
+            AddDeadTree(triangleVertices, Float3{ 18.0f, 0.0f, 7.0f }, 1.25f, 0.9f);
+
+            AddCube(triangleVertices, Float3{ 7.8f, 0.28f, 15.7f }, Float3{ 0.75f, 0.28f, 0.55f }, Color{ 0.245f, 0.235f, 0.195f, 1.0f });
+            AddCube(triangleVertices, Float3{ 9.1f, 0.34f, 16.4f }, Float3{ 0.45f, 0.34f, 0.72f }, Color{ 0.200f, 0.205f, 0.185f, 1.0f });
+            AddCube(triangleVertices, Float3{ -7.8f, 0.24f, -13.8f }, Float3{ 0.65f, 0.24f, 0.38f }, Color{ 0.240f, 0.210f, 0.160f, 1.0f });
+
+            AddAnomaly(triangleVertices, lineVertices, Float3{ 10.5f, 0.0f, -2.5f });
+            AddSectorMarkers(lineVertices);
+        }
+
+        void AddCharacterModel(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            const Float3& groundPosition,
+            float rotationZ,
+            const Color& coatColor,
+            const Color& accentColor
+        )
+        {
+            const float yaw = DegToRad(rotationZ);
+            const Color bootColor{ 0.055f, 0.060f, 0.050f, 1.0f };
+            const Color trousers{ 0.155f, 0.185f, 0.135f, 1.0f };
+            const Color backpack{ 0.105f, 0.110f, 0.085f, 1.0f };
+            const Color mask{ 0.260f, 0.255f, 0.215f, 1.0f };
+            const Color weapon{ 0.090f, 0.085f, 0.075f, 1.0f };
+
+            const auto worldPoint = [&](float x, float y, float z)
+            {
+                return TransformLocalPoint(
+                    groundPosition,
+                    Float3{ x, y, z },
+                    yaw
+                );
+            };
+
+            AddOrientedBox(vertices, worldPoint(-0.18f, 0.14f, 0.02f), Float3{ 0.12f, 0.14f, 0.24f }, yaw, bootColor);
+            AddOrientedBox(vertices, worldPoint(0.18f, 0.14f, 0.02f), Float3{ 0.12f, 0.14f, 0.24f }, yaw, bootColor);
+
+            AddOrientedBox(vertices, worldPoint(-0.16f, 0.52f, 0.0f), Float3{ 0.11f, 0.36f, 0.11f }, yaw, trousers);
+            AddOrientedBox(vertices, worldPoint(0.16f, 0.52f, 0.0f), Float3{ 0.11f, 0.36f, 0.11f }, yaw, trousers);
+
+            AddOrientedBox(vertices, worldPoint(0.0f, 1.02f, 0.04f), Float3{ 0.34f, 0.43f, 0.21f }, yaw, coatColor);
+            AddOrientedBox(vertices, worldPoint(0.0f, 1.00f, -0.25f), Float3{ 0.28f, 0.34f, 0.10f }, yaw, backpack);
+
+            AddOrientedBox(vertices, worldPoint(-0.43f, 1.02f, 0.02f), Float3{ 0.075f, 0.34f, 0.09f }, yaw, ScaleColor(coatColor, 0.82f));
+            AddOrientedBox(vertices, worldPoint(0.43f, 1.02f, 0.02f), Float3{ 0.075f, 0.34f, 0.09f }, yaw, ScaleColor(coatColor, 0.82f));
+
+            AddOrientedBox(vertices, worldPoint(0.0f, 1.52f, 0.04f), Float3{ 0.18f, 0.18f, 0.17f }, yaw, mask);
+            AddOrientedBox(vertices, worldPoint(0.0f, 1.72f, 0.02f), Float3{ 0.20f, 0.055f, 0.18f }, yaw, accentColor);
+
+            AddOrientedBox(vertices, worldPoint(0.25f, 1.10f, 0.54f), Float3{ 0.045f, 0.050f, 0.45f }, yaw, weapon);
+            AddOrientedBox(vertices, worldPoint(0.25f, 1.10f, 0.12f), Float3{ 0.070f, 0.090f, 0.13f }, yaw, accentColor);
+        }
+
+        Color ItemColorFromId(std::int32_t worldObjectId)
+        {
+            const int bucket = std::abs(worldObjectId) % 3;
+
+            if (bucket == 0)
+                return Color{ 0.780f, 0.560f, 0.165f, 1.0f };
+
+            if (bucket == 1)
+                return Color{ 0.385f, 0.560f, 0.640f, 1.0f };
+
+            return Color{ 0.620f, 0.375f, 0.245f, 1.0f };
+        }
+
+        void AddWorldItemModel(
+            std::vector<Dx11WorldRenderer::Vertex>& vertices,
+            const WorldRenderItem& item
+        )
+        {
+            const float itemSize = std::clamp(item.Size, 0.15f, 2.0f);
+
+            const Float3 itemPosition = ToRenderPosition(
+                item.PositionX,
+                item.PositionY,
+                item.PositionZ
             );
 
-            AddLine(
+            const Color itemColor = ItemColorFromId(item.WorldObjectId);
+
+            AddCube(
                 vertices,
-                Float3{ 0.0f, 0.03f, -halfSize },
-                Float3{ 0.0f, 0.03f, halfSize },
-                zAxisColor
+                Float3{ itemPosition.X, itemPosition.Y + itemSize * 0.42f, itemPosition.Z },
+                Float3{ itemSize * 1.20f, itemSize * 0.42f, itemSize * 0.78f },
+                itemColor
+            );
+
+            AddCube(
+                vertices,
+                Float3{ itemPosition.X, itemPosition.Y + itemSize * 0.92f, itemPosition.Z },
+                Float3{ itemSize * 0.92f, itemSize * 0.10f, itemSize * 0.58f },
+                ScaleColor(itemColor, 1.18f)
             );
         }
-		
+
 		void AddScreenGradientQuad(
             std::vector<Dx11WorldRenderer::Vertex>& vertices,
             float topY,
@@ -533,6 +918,7 @@ namespace StalkerOnline::Engine
         std::uint32_t viewportWidth,
         std::uint32_t viewportHeight,
         const WorldRenderPlayer& player,
+        const std::vector<WorldRenderRemotePlayer>& remotePlayers,
         const std::vector<WorldRenderItem>& items,
         GameCameraMode cameraMode
     )
@@ -618,11 +1004,6 @@ namespace StalkerOnline::Engine
             0
         );
 
-        std::vector<Vertex> lineVertices;
-        lineVertices.reserve(512);
-
-        AddGrid(lineVertices);
-
         Float3 playerPosition = ToRenderPosition(
             player.PositionX,
             player.PositionY,
@@ -632,63 +1013,67 @@ namespace StalkerOnline::Engine
         if (!player.Valid)
             playerPosition = Float3{ 0.0f, 0.0f, 0.0f };
 
+        std::vector<Vertex> triangleVertices;
+        triangleVertices.reserve(32768);
+
+        std::vector<Vertex> lineVertices;
+        lineVertices.reserve(2048);
+
+        AddWorldScene(triangleVertices, lineVertices);
+
         AddPlayerForwardLine(lineVertices, playerPosition, player.RotationZ);
 
-        UploadAndDraw(
-            deviceContext,
-            lineVertices,
-            D3D11_PRIMITIVE_TOPOLOGY_LINELIST
-        );
+        const Color localPlayerColor{ 0.210f, 0.430f, 0.255f, 1.0f };
+        const Color localAccentColor{ 0.625f, 0.560f, 0.250f, 1.0f };
+        const Color remotePlayerColor{ 0.315f, 0.390f, 0.440f, 1.0f };
+        const Color remoteAccentColor{ 0.560f, 0.635f, 0.690f, 1.0f };
 
-        std::vector<Vertex> triangleVertices;
-        triangleVertices.reserve(4096);
-
-        const Color playerColor{ 0.22f, 0.72f, 0.32f, 1.0f };
-        const Color itemColor{ 0.90f, 0.68f, 0.20f, 1.0f };
-
-        const Float3 playerCenter
+        if (cameraMode != GameCameraMode::FirstPerson)
         {
-            playerPosition.X,
-            playerPosition.Y + 0.9f,
-            playerPosition.Z
-        };
+            AddCharacterModel(
+                triangleVertices,
+                playerPosition,
+                player.RotationZ,
+                localPlayerColor,
+                localAccentColor
+            );
+        }
 
-        AddCube(
-            triangleVertices,
-            playerCenter,
-            Float3{ 0.35f, 0.9f, 0.35f },
-            playerColor
-        );
+        for (const WorldRenderRemotePlayer& remotePlayer : remotePlayers)
+        {
+            if (!remotePlayer.IsAlive)
+                continue;
+
+            const Float3 remotePlayerPosition = ToRenderPosition(
+                remotePlayer.PositionX,
+                remotePlayer.PositionY,
+                remotePlayer.PositionZ
+            );
+
+            AddCharacterModel(
+                triangleVertices,
+                remotePlayerPosition,
+                remotePlayer.RotationZ,
+                remotePlayerColor,
+                remoteAccentColor
+            );
+        }
 
         for (const WorldRenderItem& item : items)
         {
-            const float itemSize = std::clamp(item.Size, 0.15f, 2.0f);
-
-            const Float3 itemPosition = ToRenderPosition(
-                item.PositionX,
-                item.PositionY,
-                item.PositionZ
-            );
-
-            const Float3 itemCenter
-            {
-                itemPosition.X,
-                itemPosition.Y + itemSize * 0.5f,
-                itemPosition.Z
-            };
-
-            AddCube(
-                triangleVertices,
-                itemCenter,
-                Float3{ itemSize, itemSize, itemSize },
-                itemColor
-            );
+            AddWorldItemModel(triangleVertices, item);
         }
 
         UploadAndDraw(
             deviceContext,
             triangleVertices,
             D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+        );
+
+        UploadAndDraw(
+            deviceContext,
+            lineVertices,
+            D3D11_PRIMITIVE_TOPOLOGY_LINELIST
         );
     }
 

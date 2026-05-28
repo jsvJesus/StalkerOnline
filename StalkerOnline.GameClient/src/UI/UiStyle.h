@@ -100,6 +100,8 @@ namespace StalkerOnline::UI
         InventorySnapshotUi Inventory;
         std::vector<WorldItemUi> WorldItems;
 
+        int32_t NearbyPlayerCount = 0;
+
         int32_t SelectedWorldItemId = 0;
         int32_t SelectedInventorySlotIndex = -1;
 

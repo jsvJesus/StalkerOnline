@@ -35,13 +35,49 @@ add_executable(StalkerOnline.GameClient WIN32
     ${IMGUI_DIR}/backends/imgui_impl_dx11.cpp
 )
 
+add_executable(StalkerOnline.LevelEditor WIN32
+    src/Editor/LevelEditor.cpp
+    src/Editor/Heightmap.h
+    src/Editor/Heightmap.cpp
+    src/Editor/Dx11LevelEditorRenderer.h
+    src/Editor/Dx11LevelEditorRenderer.cpp
+
+    src/Engine/Renderer/Dx11Renderer.h
+    src/Engine/Renderer/Dx11Renderer.cpp
+
+    src/UI/UiStyle.h
+    src/UI/UiStyle.cpp
+
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+
+    ${IMGUI_DIR}/backends/imgui_impl_win32.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_dx11.cpp
+)
+
 target_include_directories(StalkerOnline.GameClient PRIVATE
     src
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
 )
 
+target_include_directories(StalkerOnline.LevelEditor PRIVATE
+    src
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+)
+
 target_compile_definitions(StalkerOnline.GameClient PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+    IMGUI_IMPL_WIN32_DISABLE_GAMEPAD
+)
+
+target_compile_definitions(StalkerOnline.LevelEditor PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     UNICODE
@@ -56,8 +92,17 @@ target_link_libraries(StalkerOnline.GameClient PRIVATE
     d3dcompiler
 )
 
+target_link_libraries(StalkerOnline.LevelEditor PRIVATE
+    d3d11
+    dxgi
+    d3dcompiler
+    comdlg32
+)
+
 target_compile_features(StalkerOnline.GameClient PRIVATE cxx_std_20)
+target_compile_features(StalkerOnline.LevelEditor PRIVATE cxx_std_20)
 
 if (MSVC)
     target_compile_options(StalkerOnline.GameClient PRIVATE /W4 /permissive-)
+    target_compile_options(StalkerOnline.LevelEditor PRIVATE /W4 /permissive-)
 endif()

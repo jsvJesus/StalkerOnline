@@ -315,6 +315,12 @@ void NetworkClient::Stop()
         if (std::this_thread::get_id() != _receiveThread.get_id())
             _receiveThread.join();
     }
+
+    {
+        std::lock_guard lock(_stateMutex);
+        _worldItemsById.clear();
+        _remotePlayersByCharacterId.clear();
+    }
 }
 
 bool NetworkClient::IsConnected() const
@@ -350,6 +356,27 @@ std::vector<WorldItemView> NetworkClient::GetWorldItemsSnapshot() const
         [](const WorldItemView& a, const WorldItemView& b)
         {
             return a.WorldObjectId < b.WorldObjectId;
+        });
+
+    return result;
+}
+
+std::vector<RemotePlayerView> NetworkClient::GetRemotePlayersSnapshot() const
+{
+    std::lock_guard lock(_stateMutex);
+
+    std::vector<RemotePlayerView> result;
+    result.reserve(_remotePlayersByCharacterId.size());
+
+    for (const auto& pair : _remotePlayersByCharacterId)
+        result.push_back(pair.second);
+
+    std::sort(
+        result.begin(),
+        result.end(),
+        [](const RemotePlayerView& a, const RemotePlayerView& b)
+        {
+            return a.CharacterId < b.CharacterId;
         });
 
     return result;
@@ -549,6 +576,24 @@ void NetworkClient::HandlePacket(const PacketMessage& message)
             break;
         }
 
+        case PacketType::PlayerPositionBroadcast:
+        {
+            HandlePlayerPositionBroadcast(message);
+            break;
+        }
+
+        case PacketType::PlayerSpawn:
+        {
+            HandlePlayerSpawn(message);
+            break;
+        }
+
+        case PacketType::PlayerDespawn:
+        {
+            HandlePlayerDespawn(message);
+            break;
+        }
+
         case PacketType::InventorySnapshot:
         {
             HandleInventorySnapshot(message);
@@ -623,6 +668,7 @@ void NetworkClient::HandlePlayerStateSnapshot(const PacketMessage& message)
     {
         std::lock_guard lock(_stateMutex);
         _playerSnapshot = snapshot;
+        _remotePlayersByCharacterId.erase(snapshot.CharacterId);
     }
 
     std::wstringstream ss;
@@ -663,6 +709,109 @@ void NetworkClient::HandlePlayerPositionUpdate(const PacketMessage& message)
         }
     }
 
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandlePlayerPositionBroadcast(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+
+    const int32_t characterId = reader.ReadInt32();
+
+    const float posX = reader.ReadFloat();
+    const float posY = reader.ReadFloat();
+    const float posZ = reader.ReadFloat();
+
+    const float rotX = reader.ReadFloat();
+    const float rotY = reader.ReadFloat();
+    const float rotZ = reader.ReadFloat();
+
+    {
+        std::lock_guard lock(_stateMutex);
+
+        if (_playerSnapshot.Valid && _playerSnapshot.CharacterId == characterId)
+        {
+            _playerSnapshot.PositionX = posX;
+            _playerSnapshot.PositionY = posY;
+            _playerSnapshot.PositionZ = posZ;
+
+            _playerSnapshot.RotationX = rotX;
+            _playerSnapshot.RotationY = rotY;
+            _playerSnapshot.RotationZ = rotZ;
+        }
+        else
+        {
+            RemotePlayerView& remotePlayer = _remotePlayersByCharacterId[characterId];
+            remotePlayer.CharacterId = characterId;
+
+            remotePlayer.PositionX = posX;
+            remotePlayer.PositionY = posY;
+            remotePlayer.PositionZ = posZ;
+
+            remotePlayer.RotationX = rotX;
+            remotePlayer.RotationY = rotY;
+            remotePlayer.RotationZ = rotZ;
+
+            if (!remotePlayer.IsAlive)
+                remotePlayer.IsAlive = true;
+        }
+    }
+
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandlePlayerSpawn(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+
+    RemotePlayerView player;
+
+    player.CharacterId = reader.ReadInt32();
+    player.Nickname = reader.ReadString();
+
+    player.PositionX = reader.ReadFloat();
+    player.PositionY = reader.ReadFloat();
+    player.PositionZ = reader.ReadFloat();
+
+    player.RotationX = reader.ReadFloat();
+    player.RotationY = reader.ReadFloat();
+    player.RotationZ = reader.ReadFloat();
+
+    player.Health = reader.ReadFloat();
+    player.MaxHealth = reader.ReadFloat();
+
+    player.IsAlive = reader.ReadBool();
+
+    {
+        std::lock_guard lock(_stateMutex);
+
+        if (!_playerSnapshot.Valid || _playerSnapshot.CharacterId != player.CharacterId)
+            _remotePlayersByCharacterId[player.CharacterId] = player;
+    }
+
+    std::wstringstream ss;
+    ss
+        << L"[PLAYER SPAWN] CharacterId=" << player.CharacterId
+        << L", Nickname=" << Utf8ToWide(player.Nickname);
+
+    Log(ss.str());
+    NotifyStateChanged();
+}
+
+void NetworkClient::HandlePlayerDespawn(const PacketMessage& message)
+{
+    PacketReader reader(message.Payload);
+    const int32_t characterId = reader.ReadInt32();
+
+    {
+        std::lock_guard lock(_stateMutex);
+        _remotePlayersByCharacterId.erase(characterId);
+    }
+
+    std::wstringstream ss;
+    ss << L"[PLAYER DESPAWN] CharacterId=" << characterId;
+
+    Log(ss.str());
     NotifyStateChanged();
 }
 

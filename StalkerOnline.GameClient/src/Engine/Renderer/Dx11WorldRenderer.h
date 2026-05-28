@@ -36,6 +36,19 @@ namespace StalkerOnline::Engine
         float Size = 0.35f;
     };
 
+    struct WorldRenderRemotePlayer
+    {
+        std::int32_t CharacterId = 0;
+
+        float PositionX = 0.0f;
+        float PositionY = 0.0f;
+        float PositionZ = 0.0f;
+
+        float RotationZ = 0.0f;
+
+        bool IsAlive = true;
+    };
+
     class Dx11WorldRenderer final
     {
     public:
@@ -53,6 +66,7 @@ namespace StalkerOnline::Engine
             std::uint32_t viewportWidth,
             std::uint32_t viewportHeight,
             const WorldRenderPlayer& player,
+            const std::vector<WorldRenderRemotePlayer>& remotePlayers,
             const std::vector<WorldRenderItem>& items,
             GameCameraMode cameraMode
         );

@@ -1005,6 +1005,7 @@ namespace StalkerOnline::UI
 
             ImGui::TextColored(ColorFromBytes(194, 180, 130), "AccountId: %d", state.Player.AccountId);
             ImGui::TextColored(ColorFromBytes(194, 180, 130), "CharacterId: %d", state.Player.CharacterId);
+            ImGui::TextColored(ColorFromBytes(194, 180, 130), "Nearby players: %d", state.NearbyPlayerCount);
 
             ImGui::Separator();
 

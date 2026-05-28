@@ -479,6 +479,9 @@ namespace
 
             g_gameScreenState.WorldItems.push_back(std::move(uiItem));
         }
+
+        g_gameScreenState.NearbyPlayerCount =
+            static_cast<int32_t>(g_client->GetRemotePlayersSnapshot().size());
     }
 
     void RunLogin()
@@ -840,11 +843,32 @@ namespace
             renderItems.push_back(renderItem);
         }
 
+        std::vector<RemotePlayerView> remotePlayers = g_client->GetRemotePlayersSnapshot();
+
+        std::vector<StalkerOnline::Engine::WorldRenderRemotePlayer> renderRemotePlayers;
+        renderRemotePlayers.reserve(remotePlayers.size());
+
+        for (const RemotePlayerView& remotePlayer : remotePlayers)
+        {
+            StalkerOnline::Engine::WorldRenderRemotePlayer renderRemotePlayer;
+            renderRemotePlayer.CharacterId = remotePlayer.CharacterId;
+
+            renderRemotePlayer.PositionX = remotePlayer.PositionX;
+            renderRemotePlayer.PositionY = remotePlayer.PositionY;
+            renderRemotePlayer.PositionZ = remotePlayer.PositionZ;
+
+            renderRemotePlayer.RotationZ = remotePlayer.RotationZ;
+            renderRemotePlayer.IsAlive = remotePlayer.IsAlive;
+
+            renderRemotePlayers.push_back(renderRemotePlayer);
+        }
+
         g_worldRenderer->Render(
             g_renderer->GetDeviceContext(),
             g_renderer->GetWidth(),
             g_renderer->GetHeight(),
             renderPlayer,
+            renderRemotePlayers,
             renderItems,
             g_cameraMode
         );

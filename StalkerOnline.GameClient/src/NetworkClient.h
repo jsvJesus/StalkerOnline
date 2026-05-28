@@ -102,6 +102,26 @@ struct WorldItemView
     float RotationZ = 0.0f;
 };
 
+struct RemotePlayerView
+{
+    int32_t CharacterId = 0;
+
+    std::string Nickname;
+
+    float PositionX = 0.0f;
+    float PositionY = 0.0f;
+    float PositionZ = 0.0f;
+
+    float RotationX = 0.0f;
+    float RotationY = 0.0f;
+    float RotationZ = 0.0f;
+
+    float Health = 0.0f;
+    float MaxHealth = 0.0f;
+
+    bool IsAlive = false;
+};
+
 class NetworkClient
 {
 public:
@@ -145,6 +165,7 @@ public:
     PlayerSnapshot GetPlayerSnapshot() const;
     InventorySnapshotView GetInventorySnapshot() const;
     std::vector<WorldItemView> GetWorldItemsSnapshot() const;
+    std::vector<RemotePlayerView> GetRemotePlayersSnapshot() const;
 
 private:
     bool SendPacket(PacketType type, const std::vector<uint8_t>& payload);
@@ -158,6 +179,9 @@ private:
 
     void HandlePlayerStateSnapshot(const PacketMessage& message);
     void HandlePlayerPositionUpdate(const PacketMessage& message);
+    void HandlePlayerPositionBroadcast(const PacketMessage& message);
+    void HandlePlayerSpawn(const PacketMessage& message);
+    void HandlePlayerDespawn(const PacketMessage& message);
     void HandleInventorySnapshot(const PacketMessage& message);
     void HandleWorldItemSpawn(const PacketMessage& message);
     void HandleWorldItemDespawn(const PacketMessage& message);
@@ -185,6 +209,7 @@ private:
     PlayerSnapshot _playerSnapshot;
     InventorySnapshotView _inventorySnapshot;
     std::unordered_map<int32_t, WorldItemView> _worldItemsById;
+    std::unordered_map<int32_t, RemotePlayerView> _remotePlayersByCharacterId;
 
     std::atomic_bool _connected = false;
     std::atomic_bool _receiveLoopRunning = false;
