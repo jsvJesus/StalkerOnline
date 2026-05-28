@@ -1176,7 +1176,7 @@ namespace StalkerOnline::Editor
             PS_INPUT VSMain(VS_INPUT input)
             {
                 PS_INPUT output;
-                output.Position = mul(ViewProjection, float4(input.Position, 1.0f));
+                output.Position = mul(float4(input.Position, 1.0f), ViewProjection);
                 output.Color = input.Color;
                 return output;
             }
