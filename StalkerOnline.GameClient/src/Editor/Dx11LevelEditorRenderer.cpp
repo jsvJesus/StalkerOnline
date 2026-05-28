@@ -109,42 +109,50 @@ namespace StalkerOnline::Editor
             };
         }
 
-        Color TerrainColor(float normalizedHeight)
+        Color LerpColor(const Color& a, const Color& b, float t)
         {
-            const float value = std::clamp(normalizedHeight, 0.0f, 1.0f);
+            const float clampedT = std::clamp(t, 0.0f, 1.0f);
 
-            if (value < 0.25f)
-            {
-                const float t = value / 0.25f;
-                return
-                {
-                    0.100f + t * 0.055f,
-                    0.165f + t * 0.095f,
-                    0.135f + t * 0.060f,
-                    1.0f
-                };
-            }
-
-            if (value < 0.65f)
-            {
-                const float t = (value - 0.25f) / 0.40f;
-                return
-                {
-                    0.165f + t * 0.205f,
-                    0.245f + t * 0.175f,
-                    0.150f + t * 0.100f,
-                    1.0f
-                };
-            }
-
-            const float t = (value - 0.65f) / 0.35f;
             return
             {
-                0.350f + t * 0.360f,
-                0.390f + t * 0.330f,
-                0.250f + t * 0.320f,
-                1.0f
+                a[0] + (b[0] - a[0]) * clampedT,
+                a[1] + (b[1] - a[1]) * clampedT,
+                a[2] + (b[2] - a[2]) * clampedT,
+                a[3] + (b[3] - a[3]) * clampedT
             };
+        }
+
+        Color TerrainColor(float normalizedHeight)
+        {
+            const float h = std::clamp(normalizedHeight, 0.0f, 1.0f);
+
+            const Color wetSand    { 0.34f, 0.32f, 0.22f, 1.0f };
+            const Color beachSand  { 0.72f, 0.63f, 0.40f, 1.0f };
+            const Color dryGrass   { 0.34f, 0.42f, 0.20f, 1.0f };
+            const Color deepGrass  { 0.14f, 0.28f, 0.13f, 1.0f };
+            const Color hillGreen  { 0.25f, 0.36f, 0.16f, 1.0f };
+            const Color rock       { 0.34f, 0.34f, 0.30f, 1.0f };
+            const Color highRock   { 0.52f, 0.52f, 0.48f, 1.0f };
+
+            if (h < 0.30f)
+                return wetSand;
+
+            if (h < 0.38f)
+                return LerpColor(wetSand, beachSand, (h - 0.30f) / 0.08f);
+
+            if (h < 0.52f)
+                return LerpColor(beachSand, dryGrass, (h - 0.38f) / 0.14f);
+
+            if (h < 0.68f)
+                return LerpColor(dryGrass, deepGrass, (h - 0.52f) / 0.16f);
+
+            if (h < 0.82f)
+                return LerpColor(deepGrass, hillGreen, (h - 0.68f) / 0.14f);
+
+            if (h < 0.94f)
+                return LerpColor(hillGreen, rock, (h - 0.82f) / 0.12f);
+
+            return LerpColor(rock, highRock, (h - 0.94f) / 0.06f);
         }
 
         float HeightForPreview(
@@ -180,6 +188,89 @@ namespace StalkerOnline::Editor
                 (static_cast<float>(x) - centerX) * settings.CellSizeX,
                 (HeightForPreview(heightmap.GetHeightNormalized(x, y), settings) - 0.5f) * settings.HeightScale,
                 (static_cast<float>(y) - centerY) * settings.CellSizeY
+            };
+        }
+
+        Float3 Subtract(const Float3& a, const Float3& b)
+        {
+            return
+            {
+                a.X - b.X,
+                a.Y - b.Y,
+                a.Z - b.Z
+            };
+        }
+
+        Float3 CrossProduct(const Float3& a, const Float3& b)
+        {
+            return
+            {
+                a.Y * b.Z - a.Z * b.Y,
+                a.Z * b.X - a.X * b.Z,
+                a.X * b.Y - a.Y * b.X
+            };
+        }
+
+        float DotProduct(const Float3& a, const Float3& b)
+        {
+            return a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+        }
+
+        Float3 NormalizeFloat3(const Float3& value)
+        {
+            const float length = std::sqrt(
+                value.X * value.X +
+                value.Y * value.Y +
+                value.Z * value.Z);
+
+            if (length <= 0.000001f)
+                return { 0.0f, 1.0f, 0.0f };
+
+            return
+            {
+                value.X / length,
+                value.Y / length,
+                value.Z / length
+            };
+        }
+
+        Float3 CalculateTriangleNormal(
+            const Float3& a,
+            const Float3& b,
+            const Float3& c)
+        {
+            Float3 normal = NormalizeFloat3(
+                CrossProduct(
+                    Subtract(c, a),
+                    Subtract(b, a)));
+
+            if (normal.Y < 0.0f)
+            {
+                normal.X = -normal.X;
+                normal.Y = -normal.Y;
+                normal.Z = -normal.Z;
+            }
+
+            return normal;
+        }
+
+        Color ApplySunLight(const Color& baseColor, const Float3& normal)
+        {
+            const Float3 sunDirection = NormalizeFloat3({ -0.45f, 0.82f, -0.35f });
+
+            const float ndotl = std::clamp(DotProduct(normal, sunDirection), 0.0f, 1.0f);
+            const float ambient = 0.42f;
+            const float diffuse = 0.78f * ndotl;
+            const float light = std::clamp(ambient + diffuse, 0.20f, 1.25f);
+
+            const float skyBounce = std::clamp(normal.Y, 0.0f, 1.0f) * 0.08f;
+
+            return
+            {
+                std::clamp(baseColor[0] * light + skyBounce * 0.20f, 0.0f, 1.0f),
+                std::clamp(baseColor[1] * light + skyBounce * 0.28f, 0.0f, 1.0f),
+                std::clamp(baseColor[2] * light + skyBounce * 0.34f, 0.0f, 1.0f),
+                baseColor[3]
             };
         }
 
@@ -269,10 +360,17 @@ namespace StalkerOnline::Editor
                         heightmap.GetHeightNormalized(x1, y1) +
                         heightmap.GetHeightNormalized(x, y1)) * 0.25f;
 
-                    const Color color = TerrainColor(HeightForPreview(averageHeight, settings));
+                    const float previewHeight = HeightForPreview(averageHeight, settings);
+                    const Color baseColor = TerrainColor(previewHeight);
 
-                    AddTriangle(triangleVertices, p00, p10, p11, color);
-                    AddTriangle(triangleVertices, p00, p11, p01, ScaleColor(color, 0.93f));
+                    const Float3 normalA = CalculateTriangleNormal(p00, p10, p11);
+                    const Float3 normalB = CalculateTriangleNormal(p00, p11, p01);
+
+                    const Color colorA = ApplySunLight(baseColor, normalA);
+                    const Color colorB = ApplySunLight(ScaleColor(baseColor, 0.96f), normalB);
+
+                    AddTriangle(triangleVertices, p00, p10, p11, colorA);
+                    AddTriangle(triangleVertices, p00, p11, p01, colorB);
 
                     if (settings.ShowWireframe)
                     {
@@ -280,6 +378,69 @@ namespace StalkerOnline::Editor
                         AddLine(lineVertices, p00, p10, lineColor);
                         AddLine(lineVertices, p00, p01, lineColor);
                     }
+                }
+            }
+        }
+
+        void AddWaterPlane(
+            std::vector<Dx11LevelEditorRenderer::Vertex>& triangleVertices,
+            const Heightmap& heightmap,
+            const LevelEditorRenderSettings& settings)
+        {
+            if (!heightmap.IsValid())
+                return;
+
+            const float terrainWidth = static_cast<float>(heightmap.GetWidth() - 1) * settings.CellSizeX;
+            const float terrainHeight = static_cast<float>(heightmap.GetHeight() - 1) * settings.CellSizeY;
+
+            const float maxAxis = (std::max)(terrainWidth, terrainHeight);
+            const float margin = maxAxis * 0.35f;
+
+            const float minX = -terrainWidth * 0.5f - margin;
+            const float maxX =  terrainWidth * 0.5f + margin;
+            const float minZ = -terrainHeight * 0.5f - margin;
+            const float maxZ =  terrainHeight * 0.5f + margin;
+
+            const float waterRawLevel = 0.337f;
+            const float waterY =
+                (HeightForPreview(waterRawLevel, settings) - 0.5f) * settings.HeightScale + 12.0f;
+
+            constexpr int grid = 24;
+
+            const Color shallowWater { 0.050f, 0.390f, 0.410f, 1.0f };
+            const Color deepWater    { 0.025f, 0.145f, 0.220f, 1.0f };
+
+            for (int z = 0; z < grid; ++z)
+            {
+                for (int x = 0; x < grid; ++x)
+                {
+                    const float tx0 = static_cast<float>(x) / static_cast<float>(grid);
+                    const float tx1 = static_cast<float>(x + 1) / static_cast<float>(grid);
+                    const float tz0 = static_cast<float>(z) / static_cast<float>(grid);
+                    const float tz1 = static_cast<float>(z + 1) / static_cast<float>(grid);
+
+                    const float wx0 = minX + (maxX - minX) * tx0;
+                    const float wx1 = minX + (maxX - minX) * tx1;
+                    const float wz0 = minZ + (maxZ - minZ) * tz0;
+                    const float wz1 = minZ + (maxZ - minZ) * tz1;
+
+                    const float centerX = (tx0 + tx1) * 0.5f - 0.5f;
+                    const float centerZ = (tz0 + tz1) * 0.5f - 0.5f;
+                    const float distance = std::sqrt(centerX * centerX + centerZ * centerZ) * 2.0f;
+
+                    const float wave =
+                        (std::sin(wx0 * 0.0017f + wz0 * 0.0023f) + 1.0f) * 0.5f;
+
+                    const Color waterColor =
+                        LerpColor(shallowWater, deepWater, std::clamp(distance * 0.85f + wave * 0.12f, 0.0f, 1.0f));
+
+                    const Float3 p00{ wx0, waterY, wz0 };
+                    const Float3 p10{ wx1, waterY, wz0 };
+                    const Float3 p11{ wx1, waterY, wz1 };
+                    const Float3 p01{ wx0, waterY, wz1 };
+
+                    AddTriangle(triangleVertices, p00, p10, p11, waterColor);
+                    AddTriangle(triangleVertices, p00, p11, p01, ScaleColor(waterColor, 0.94f));
                 }
             }
         }
@@ -375,31 +536,31 @@ namespace StalkerOnline::Editor
             switch (type)
             {
                 case EditorObjectType::StaticMeshProxy:
-                    return { 0.45f, 0.55f, 0.70f, 1.0f };
+                    return { 1.0f, 0.12f, 0.16f, 1.0f };
 
                 case EditorObjectType::SpeedTreeProxy:
-                    return { 0.25f, 0.70f, 0.25f, 1.0f };
+                    return { 0.12f, 0.50f, 0.12f, 1.0f };
 
                 case EditorObjectType::PlayerSpawn:
-                    return { 0.25f, 0.65f, 1.0f, 1.0f };
+                    return { 0.20f, 0.42f, 1.0f, 1.0f };
 
                 case EditorObjectType::LootSpawner:
-                    return { 0.95f, 0.75f, 0.25f, 1.0f };
+                    return { 1.0f, 0.75f, 0.12f, 1.0f };
 
                 case EditorObjectType::SafeZone:
-                    return { 0.20f, 0.85f, 0.55f, 1.0f };
+                    return { 0.15f, 1.0f, 0.45f, 1.0f };
 
                 case EditorObjectType::RadiationZone:
-                    return { 0.80f, 0.95f, 0.20f, 1.0f };
+                    return { 0.75f, 1.0f, 0.12f, 1.0f };
 
                 case EditorObjectType::AnomalyZone:
-                    return { 0.80f, 0.25f, 1.0f, 1.0f };
+                    return { 0.80f, 0.18f, 1.0f, 1.0f };
 
                 case EditorObjectType::Light:
-                    return { 1.0f, 0.92f, 0.50f, 1.0f };
+                    return { 1.0f, 0.95f, 0.45f, 1.0f };
 
                 default:
-                    return { 1.0f, 1.0f, 1.0f, 1.0f };
+                    return { 1.0f, 0.12f, 0.16f, 1.0f };
             }
         }
 
@@ -528,6 +689,198 @@ namespace StalkerOnline::Editor
             };
 
             AddLine(lineVertices, objectCenter, objectTop, color);
+        }
+
+        Color ObjectFillColor(EditorObjectType type)
+        {
+            switch (type)
+            {
+                case EditorObjectType::StaticMeshProxy:
+                    return { 0.33f, 0.25f, 0.19f, 1.0f };
+
+                case EditorObjectType::SpeedTreeProxy:
+                    return { 0.08f, 0.25f, 0.08f, 1.0f };
+
+                case EditorObjectType::PlayerSpawn:
+                    return { 0.08f, 0.18f, 0.60f, 1.0f };
+
+                case EditorObjectType::LootSpawner:
+                    return { 0.55f, 0.38f, 0.10f, 1.0f };
+
+                case EditorObjectType::SafeZone:
+                    return { 0.04f, 0.34f, 0.16f, 1.0f };
+
+                case EditorObjectType::RadiationZone:
+                    return { 0.38f, 0.48f, 0.05f, 1.0f };
+
+                case EditorObjectType::AnomalyZone:
+                    return { 0.36f, 0.08f, 0.50f, 1.0f };
+
+                case EditorObjectType::Light:
+                    return { 0.75f, 0.62f, 0.20f, 1.0f };
+
+                default:
+                    return { 0.35f, 0.25f, 0.20f, 1.0f };
+            }
+        }
+
+        void AddSolidBox(
+            std::vector<Dx11LevelEditorRenderer::Vertex>& triangleVertices,
+            const EditorObject& object,
+            const Color& baseColor)
+        {
+            const Float3 halfSize = ObjectHalfSize(object);
+
+            const Float3 localCorners[8]
+            {
+                { -halfSize.X, -halfSize.Y, -halfSize.Z },
+                {  halfSize.X, -halfSize.Y, -halfSize.Z },
+                {  halfSize.X, -halfSize.Y,  halfSize.Z },
+                { -halfSize.X, -halfSize.Y,  halfSize.Z },
+
+                { -halfSize.X,  halfSize.Y, -halfSize.Z },
+                {  halfSize.X,  halfSize.Y, -halfSize.Z },
+                {  halfSize.X,  halfSize.Y,  halfSize.Z },
+                { -halfSize.X,  halfSize.Y,  halfSize.Z }
+            };
+
+            Float3 corners[8]{};
+
+            for (int i = 0; i < 8; ++i)
+                corners[i] = TransformObjectPoint(localCorners[i], object);
+
+            const int faces[12][3]
+            {
+                { 0, 1, 2 }, { 0, 2, 3 },
+                { 4, 6, 5 }, { 4, 7, 6 },
+                { 0, 4, 5 }, { 0, 5, 1 },
+                { 1, 5, 6 }, { 1, 6, 2 },
+                { 2, 6, 7 }, { 2, 7, 3 },
+                { 3, 7, 4 }, { 3, 4, 0 }
+            };
+
+            for (int i = 0; i < 12; ++i)
+            {
+                const Float3 a = corners[faces[i][0]];
+                const Float3 b = corners[faces[i][1]];
+                const Float3 c = corners[faces[i][2]];
+
+                const Float3 normal = CalculateTriangleNormal(a, b, c);
+                const Color color = ApplySunLight(baseColor, normal);
+
+                AddTriangle(triangleVertices, a, b, c, color);
+            }
+        }
+
+        void AddTreeProxySolid(
+            std::vector<Dx11LevelEditorRenderer::Vertex>& triangleVertices,
+            const EditorObject& object)
+        {
+            const float radius = 120.0f * object.Scale.X;
+            const float trunkRadius = 28.0f * object.Scale.X;
+            const float trunkHeight = 210.0f * object.Scale.Y;
+            const float treeHeight = 760.0f * object.Scale.Y;
+
+            const Float3 base
+            {
+                object.Position.X,
+                object.Position.Y,
+                object.Position.Z
+            };
+
+            const Color trunkColor { 0.20f, 0.12f, 0.065f, 1.0f };
+            const Color leafColorA { 0.045f, 0.18f, 0.055f, 1.0f };
+            const Color leafColorB { 0.065f, 0.28f, 0.075f, 1.0f };
+
+            EditorObject trunk = object;
+            trunk.Type = EditorObjectType::StaticMeshProxy;
+            trunk.Position = { base.X, base.Y + trunkHeight * 0.5f, base.Z };
+            trunk.Scale = { 1.0f, 1.0f, 1.0f };
+            trunk.Radius = trunkRadius;
+
+            const Float3 trunkHalf{ trunkRadius, trunkHeight * 0.5f, trunkRadius };
+
+            const Float3 trunkCorners[8]
+            {
+                { -trunkHalf.X, -trunkHalf.Y, -trunkHalf.Z },
+                {  trunkHalf.X, -trunkHalf.Y, -trunkHalf.Z },
+                {  trunkHalf.X, -trunkHalf.Y,  trunkHalf.Z },
+                { -trunkHalf.X, -trunkHalf.Y,  trunkHalf.Z },
+
+                { -trunkHalf.X,  trunkHalf.Y, -trunkHalf.Z },
+                {  trunkHalf.X,  trunkHalf.Y, -trunkHalf.Z },
+                {  trunkHalf.X,  trunkHalf.Y,  trunkHalf.Z },
+                { -trunkHalf.X,  trunkHalf.Y,  trunkHalf.Z }
+            };
+
+            Float3 tc[8]{};
+
+            for (int i = 0; i < 8; ++i)
+                tc[i] = TransformObjectPoint(trunkCorners[i], trunk);
+
+            AddTriangle(triangleVertices, tc[0], tc[1], tc[2], trunkColor);
+            AddTriangle(triangleVertices, tc[0], tc[2], tc[3], trunkColor);
+            AddTriangle(triangleVertices, tc[4], tc[6], tc[5], trunkColor);
+            AddTriangle(triangleVertices, tc[4], tc[7], tc[6], trunkColor);
+            AddTriangle(triangleVertices, tc[0], tc[4], tc[5], trunkColor);
+            AddTriangle(triangleVertices, tc[0], tc[5], tc[1], trunkColor);
+            AddTriangle(triangleVertices, tc[1], tc[5], tc[6], trunkColor);
+            AddTriangle(triangleVertices, tc[1], tc[6], tc[2], trunkColor);
+            AddTriangle(triangleVertices, tc[2], tc[6], tc[7], trunkColor);
+            AddTriangle(triangleVertices, tc[2], tc[7], tc[3], trunkColor);
+            AddTriangle(triangleVertices, tc[3], tc[7], tc[4], trunkColor);
+            AddTriangle(triangleVertices, tc[3], tc[4], tc[0], trunkColor);
+
+            const Float3 foliageBase[4]
+            {
+                { base.X - radius, base.Y + trunkHeight, base.Z - radius },
+                { base.X + radius, base.Y + trunkHeight, base.Z - radius },
+                { base.X + radius, base.Y + trunkHeight, base.Z + radius },
+                { base.X - radius, base.Y + trunkHeight, base.Z + radius }
+            };
+
+            const Float3 top
+            {
+                base.X,
+                base.Y + treeHeight,
+                base.Z
+            };
+
+            AddTriangle(triangleVertices, foliageBase[0], foliageBase[1], top, leafColorA);
+            AddTriangle(triangleVertices, foliageBase[1], foliageBase[2], top, leafColorB);
+            AddTriangle(triangleVertices, foliageBase[2], foliageBase[3], top, leafColorA);
+            AddTriangle(triangleVertices, foliageBase[3], foliageBase[0], top, leafColorB);
+            AddTriangle(triangleVertices, foliageBase[0], foliageBase[2], foliageBase[1], ScaleColor(leafColorA, 0.75f));
+            AddTriangle(triangleVertices, foliageBase[0], foliageBase[3], foliageBase[2], ScaleColor(leafColorB, 0.75f));
+        }
+
+        void BuildSceneSolidVertices(
+            std::vector<Dx11LevelEditorRenderer::Vertex>& triangleVertices,
+            const EditorScene& scene)
+        {
+            for (const EditorObject& object : scene.GetObjects())
+            {
+                if (!object.Visible)
+                    continue;
+
+                if (object.Type == EditorObjectType::SpeedTreeProxy)
+                {
+                    AddTreeProxySolid(triangleVertices, object);
+                    continue;
+                }
+
+                if (object.Type == EditorObjectType::SafeZone ||
+                    object.Type == EditorObjectType::RadiationZone ||
+                    object.Type == EditorObjectType::AnomalyZone)
+                {
+                    continue;
+                }
+
+                AddSolidBox(
+                    triangleVertices,
+                    object,
+                    ObjectFillColor(object.Type));
+            }
         }
 
         void BuildSceneObjectVertices(
@@ -704,6 +1057,9 @@ namespace StalkerOnline::Editor
         std::vector<Vertex> lineVertices;
 
         BuildTerrainVertices(triangleVertices, lineVertices, heightmap, settings);
+        AddWaterPlane(triangleVertices, heightmap, settings);
+        BuildSceneSolidVertices(triangleVertices, scene);
+
         AddReferenceGrid(lineVertices, heightmap, settings);
         AddBrushCircle(lineVertices, heightmap, settings);
         BuildSceneObjectVertices(lineVertices, scene);

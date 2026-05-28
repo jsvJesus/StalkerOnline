@@ -59,11 +59,39 @@ namespace
     bool g_autoDetectSquareSize = true;
     bool g_isDirty = false;
 
+    enum class StudioTab : int
+    {
+        Settings = 0,
+        Terrain,
+        Objects,
+        Materials,
+        Environment,
+        Collections,
+        Decorators,
+        Roads,
+        Gameplay,
+        PostFX,
+        ColorCorrection
+    };
+
+    StudioTab g_activeStudioTab = StudioTab::Settings;
+
+    bool g_showCameraPanel = true;
+    bool g_showMapPanel = false;
+    bool g_showShadowsPanel = false;
+    bool g_showMiscPanel = false;
+
+    float g_cameraZNear = 0.10f;
+    float g_cameraZFar = 3000.0f;
+    float g_timeOfDay = 12.0f;
+    float g_editorSpeed = 5.0f;
+
     float g_heightMin = 0.0f;
     float g_heightMax = 1.0f;
 
     StalkerOnline::SpeedTreeIntegration::TreeAssetInfo g_speedTreeAsset;
     void LoadRawHeightmap(const std::string& path);
+    void CreatePreviewIslandLevel();
 
     StalkerOnline::Editor::RawHeightFormat FormatFromIndex(int index)
     {
@@ -421,6 +449,160 @@ namespace
             "x" +
             std::to_string(g_heightmap.GetHeight()) +
             ".");
+    }
+
+    float SimpleNoise2D(float x, float y)
+    {
+        const float value =
+            std::sin(x * 12.9898f + y * 78.233f) *
+            43758.5453f;
+
+        return value - std::floor(value);
+    }
+
+    float SmoothStep(float edge0, float edge1, float x)
+    {
+        const float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    void AddPreviewObject(
+        StalkerOnline::Editor::EditorObjectType type,
+        const std::string& name,
+        float x,
+        float y,
+        float z,
+        float radius)
+    {
+        StalkerOnline::Editor::EditorObject object;
+        object.Type = type;
+        object.Name = name;
+        object.Position = { x, y, z };
+        object.Rotation = { 0.0f, SimpleNoise2D(x * 0.001f, z * 0.001f) * 360.0f, 0.0f };
+        object.Scale = { 1.0f, 1.0f, 1.0f };
+        object.Radius = radius;
+        object.Visible = true;
+
+        g_editorScene.AddObject(object);
+    }
+
+    void CreatePreviewIslandLevel()
+    {
+        g_rawWidth = 513;
+        g_rawHeight = 513;
+        g_renderSettings.CellSizeX = 100.0f;
+        g_renderSettings.CellSizeY = 100.0f;
+        g_renderSettings.HeightScale = 9000.0f;
+        g_ueZScale = g_renderSettings.HeightScale / 512.0f;
+
+        std::string errorMessage;
+
+        if (!g_heightmap.CreateFlat(g_rawWidth, g_rawHeight, 0.35f, &errorMessage))
+        {
+            SetStatus("Preview island failed: " + errorMessage);
+            return;
+        }
+
+        const float centerX = static_cast<float>(g_rawWidth - 1) * 0.5f;
+        const float centerY = static_cast<float>(g_rawHeight - 1) * 0.5f;
+
+        for (int y = 0; y < g_rawHeight; ++y)
+        {
+            for (int x = 0; x < g_rawWidth; ++x)
+            {
+                const float nx = (static_cast<float>(x) - centerX) / centerX;
+                const float ny = (static_cast<float>(y) - centerY) / centerY;
+                const float distance = std::sqrt(nx * nx + ny * ny);
+
+                const float islandMask = 1.0f - SmoothStep(0.62f, 1.05f, distance);
+
+                float height = 0.30f;
+
+                const float hillA =
+                    std::exp(-((nx + 0.25f) * (nx + 0.25f) + (ny - 0.15f) * (ny - 0.15f)) * 8.0f);
+
+                const float hillB =
+                    std::exp(-((nx - 0.30f) * (nx - 0.30f) + (ny + 0.20f) * (ny + 0.20f)) * 14.0f);
+
+                const float ridge =
+                    std::exp(-((nx + ny * 0.35f) * (nx + ny * 0.35f)) * 22.0f) * 0.20f;
+
+                const float noise =
+                    (SimpleNoise2D(static_cast<float>(x) * 0.045f, static_cast<float>(y) * 0.045f) - 0.5f) * 0.035f;
+
+                height += islandMask * (hillA * 0.42f + hillB * 0.28f + ridge + noise);
+
+                const float beach = SmoothStep(0.66f, 0.92f, distance);
+                height = height * (1.0f - beach) + 0.315f * beach;
+
+                g_heightmap.SetHeightNormalized(x, y, std::clamp(height, 0.0f, 1.0f));
+            }
+        }
+
+        CopyToBuffer(g_rawPath, sizeof(g_rawPath), "");
+        CopyToBuffer(g_savePath, sizeof(g_savePath), "");
+        CopyToBuffer(g_levelPath, sizeof(g_levelPath), "");
+
+        g_editorScene.Clear();
+
+        RefreshHeightStats();
+        ResetCameraToHeightmap();
+
+        for (int i = 0; i < 40; ++i)
+        {
+            const float a = static_cast<float>(i) * 0.73f;
+            const float r = 2500.0f + SimpleNoise2D(a, a * 2.0f) * 9500.0f;
+
+            const float x = std::cos(a) * r;
+            const float z = std::sin(a) * r;
+
+            AddPreviewObject(
+                StalkerOnline::Editor::EditorObjectType::SpeedTreeProxy,
+                "Tree Proxy",
+                x,
+                450.0f,
+                z,
+                90.0f);
+        }
+
+        for (int i = 0; i < 18; ++i)
+        {
+            const float a = static_cast<float>(i) * 1.37f;
+            const float r = 1200.0f + SimpleNoise2D(a * 2.0f, a) * 6500.0f;
+
+            const float x = std::cos(a) * r;
+            const float z = std::sin(a) * r;
+
+            AddPreviewObject(
+                StalkerOnline::Editor::EditorObjectType::StaticMeshProxy,
+                "Building Proxy",
+                x,
+                500.0f,
+                z,
+                150.0f);
+        }
+
+        AddPreviewObject(
+            StalkerOnline::Editor::EditorObjectType::PlayerSpawn,
+            "Player Spawn",
+            0.0f,
+            700.0f,
+            -1800.0f,
+            100.0f);
+
+        AddPreviewObject(
+            StalkerOnline::Editor::EditorObjectType::SafeZone,
+            "Safe Zone",
+            -1800.0f,
+            450.0f,
+            900.0f,
+            850.0f);
+
+        SyncSceneTerrainInfo();
+
+        g_isDirty = true;
+
+        SetStatus("Created preview island level.");
     }
 
     void LoadRawHeightmap(const std::string& path)
@@ -824,7 +1006,7 @@ namespace
         ImGui::Begin("##LevelEditorTopToolbar", nullptr, flags);
 
         if (ImGui::Button("New Flat"))
-            CreateFlatLevel();
+            CreatePreviewIslandLevel();
 
         ImGui::SameLine();
 
@@ -1316,14 +1498,483 @@ namespace
         ImGui::End();
     }
 
+    bool StudioTabButton(const char* label, StudioTab tab, float width)
+    {
+        const bool active = g_activeStudioTab == tab;
+
+        if (active)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.16f, 0.16f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.24f, 0.24f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.32f, 0.30f, 1.0f));
+        }
+        else
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.015f, 0.015f, 0.015f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.11f, 0.12f, 0.12f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.20f, 0.20f, 1.0f));
+        }
+
+        const bool clicked = ImGui::Button(label, ImVec2(width, 24.0f));
+
+        ImGui::PopStyleColor(3);
+
+        if (clicked)
+            g_activeStudioTab = tab;
+
+        return clicked;
+    }
+
+    bool StudioSmallButton(const char* label, bool active, float width = 76.0f)
+    {
+        if (active)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.23f, 0.24f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.85f, 0.12f, 0.10f, 1.0f));
+        }
+        else
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.025f, 0.025f, 0.025f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        }
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, active ? 1.5f : 1.0f);
+
+        const bool clicked = ImGui::Button(label, ImVec2(width, 23.0f));
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
+
+        return clicked;
+    }
+
+    void DrawStudioTopTabs()
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y));
+        ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, 36.0f));
+
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoDecoration |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoScrollWithMouse;
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.55f, 0.67f, 0.74f, 0.95f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 5.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 0.0f));
+
+        ImGui::Begin("##StudioTopTabs", nullptr, flags);
+
+        StudioTabButton("Settings", StudioTab::Settings, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Terrain", StudioTab::Terrain, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Objects", StudioTab::Objects, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Materials", StudioTab::Materials, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Environment", StudioTab::Environment, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Collections", StudioTab::Collections, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Decorators", StudioTab::Decorators, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Roads", StudioTab::Roads, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Gameplay", StudioTab::Gameplay, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Post FX", StudioTab::PostFX, 140.0f);
+        ImGui::SameLine();
+        StudioTabButton("Color Correction", StudioTab::ColorCorrection, 170.0f);
+
+        ImGui::End();
+
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor();
+    }
+
+    void DrawStudioSettingsOverlay()
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + 4.0f, viewport->Pos.y + 42.0f));
+        ImGui::SetNextWindowSize(ImVec2(350.0f, 94.0f));
+
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings;
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.14f, 0.15f, 0.76f));
+
+        ImGui::Begin("##StudioSettingsOverlay", nullptr, flags);
+
+        StudioSmallButton("System Settings", true, 110.0f);
+        ImGui::SameLine();
+        StudioSmallButton("Options Menu", false, 110.0f);
+
+        ImGui::Spacing();
+
+        if (StudioSmallButton("SAVE MAP", false, 94.0f))
+        {
+            if (g_levelPath[0] != '\0')
+                SaveLevelFile(g_levelPath);
+            else
+            {
+                const std::string path = ShowSaveLevelDialog();
+
+                if (!path.empty())
+                    SaveLevelFile(path);
+            }
+        }
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("SAVE GLOBAL", false, 110.0f))
+        {
+            if (g_levelPath[0] != '\0')
+                SaveLevelFile(g_levelPath);
+            else
+            {
+                const std::string path = ShowSaveLevelDialog();
+
+                if (!path.empty())
+                    SaveLevelFile(path);
+            }
+        }
+
+        ImGui::End();
+
+        ImGui::PopStyleColor();
+
+        const float width = 320.0f;
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x - width - 8.0f, viewport->Pos.y + 42.0f));
+        ImGui::SetNextWindowSize(ImVec2(width, 94.0f));
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.14f, 0.15f, 0.76f));
+
+        ImGui::Begin("##StudioCameraOverlay", nullptr, flags);
+
+        if (StudioSmallButton("Camera", g_showCameraPanel, 70.0f))
+            g_showCameraPanel = !g_showCameraPanel;
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Map", g_showMapPanel, 70.0f))
+            g_showMapPanel = !g_showMapPanel;
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Shadows", g_showShadowsPanel, 80.0f))
+            g_showShadowsPanel = !g_showShadowsPanel;
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Misc", g_showMiscPanel, 60.0f))
+            g_showMiscPanel = !g_showMiscPanel;
+
+        if (g_showCameraPanel)
+        {
+            ImGui::SliderFloat("Camera Z Near", &g_cameraZNear, 0.01f, 10.0f, "%.2f");
+            ImGui::SliderFloat("Camera Z Far", &g_cameraZFar, 100.0f, 100000.0f, "%.2f");
+        }
+
+        ImGui::End();
+
+        ImGui::PopStyleColor();
+    }
+
+    void DrawStudioTerrainToolbar()
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + 4.0f, viewport->Pos.y + 42.0f));
+        ImGui::SetNextWindowSize(ImVec2(620.0f, 54.0f));
+
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings;
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.14f, 0.15f, 0.76f));
+
+        ImGui::Begin("##StudioTerrainToolbar", nullptr, flags);
+
+        if (StudioSmallButton("New Flat", false, 80.0f))
+            CreateFlatLevel();
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("New Island", false, 90.0f))
+            CreatePreviewIslandLevel();
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Open RAW", false, 90.0f))
+        {
+            const std::string path = ShowOpenRawDialog();
+
+            if (!path.empty())
+                LoadRawHeightmap(path);
+        }
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Save RAW", false, 90.0f))
+            SaveRawHeightmap(g_savePath[0] != '\0' ? g_savePath : g_rawPath);
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Reset Camera", false, 115.0f))
+            ResetCameraToHeightmap();
+
+        ImGui::End();
+
+        ImGui::PopStyleColor();
+    }
+
+    void DrawStudioObjectsToolbar()
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + 4.0f, viewport->Pos.y + 42.0f));
+        ImGui::SetNextWindowSize(ImVec2(760.0f, 54.0f));
+
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings;
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.14f, 0.15f, 0.76f));
+
+        ImGui::Begin("##StudioObjectsToolbar", nullptr, flags);
+
+        if (StudioSmallButton("Add Cube", false, 86.0f))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::StaticMeshProxy,
+                "Static Mesh Proxy",
+                "",
+                100.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Add Spawn", false, 90.0f))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::PlayerSpawn,
+                "Player Spawn",
+                "",
+                100.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Add Loot", false, 80.0f))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::LootSpawner,
+                "Loot Spawner",
+                "",
+                100.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Add Tree", false, 80.0f))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::SpeedTreeProxy,
+                "SpeedTree Proxy",
+                g_speedTreeAssetPath,
+                100.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Safe Zone", false, 90.0f))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::SafeZone,
+                "Safe Zone",
+                "",
+                600.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Rad Zone", false, 90.0f))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::RadiationZone,
+                "Radiation Zone",
+                "",
+                600.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (StudioSmallButton("Anomaly", false, 86.0f))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::AnomalyZone,
+                "Anomaly Zone",
+                "",
+                250.0f);
+        }
+
+        ImGui::End();
+
+        ImGui::PopStyleColor();
+    }
+
+    void DrawStudioPlaceholderPanel(const char* title)
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + 4.0f, viewport->Pos.y + 42.0f));
+        ImGui::SetNextWindowSize(ImVec2(360.0f, 72.0f));
+
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings;
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.14f, 0.15f, 0.76f));
+
+        ImGui::Begin("##StudioPlaceholderPanel", nullptr, flags);
+
+        ImGui::Text("%s", title);
+        ImGui::TextColored(ImVec4(0.74f, 0.70f, 0.52f, 1.0f), "This tab will be implemented as a real editor module.");
+
+        ImGui::End();
+
+        ImGui::PopStyleColor();
+    }
+
+    void DrawStudioBottomBar()
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + viewport->Size.y - 24.0f));
+        ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, 24.0f));
+
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoDecoration |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoScrollWithMouse;
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.14f, 0.15f, 0.78f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5.0f, 3.0f));
+
+        ImGui::Begin("##StudioBottomBar", nullptr, flags);
+
+        ImGuiIO& io = ImGui::GetIO();
+
+        ImGui::Text(
+            "SO_EDITOR FPS %.1f [%.2fms] Objs:[%d] Cam:[%.1f %.1f %.1f] Dirty:%s",
+            io.Framerate,
+            io.Framerate > 0.0f ? 1000.0f / io.Framerate : 0.0f,
+            static_cast<int>(g_editorScene.GetObjects().size()),
+            g_renderSettings.CameraX,
+            g_renderSettings.CameraY,
+            g_renderSettings.CameraZ,
+            g_isDirty ? "yes" : "no");
+
+        ImGui::SameLine(viewport->Size.x - 520.0f);
+        ImGui::Text("Time Of Day");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderFloat("##StudioTimeOfDay", &g_timeOfDay, 0.0f, 24.0f, "%.2f");
+
+        ImGui::SameLine();
+        ImGui::Text("Speed");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(160.0f);
+
+        if (ImGui::SliderFloat("##StudioSpeed", &g_editorSpeed, 1.0f, 20.0f, "%.0f"))
+            g_renderSettings.CameraSpeed = 1400.0f * g_editorSpeed;
+
+        ImGui::End();
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+    }
+
     void DrawEditorUi()
     {
-        DrawTopToolbar();
-        DrawImportPanel();
-        DrawScenePanel();
-        DrawSculptPanel();
-        DrawSpeedTreePanel();
-        DrawDetailsPanel();
+        DrawStudioTopTabs();
+
+        switch (g_activeStudioTab)
+        {
+            case StudioTab::Settings:
+                DrawStudioSettingsOverlay();
+                break;
+
+            case StudioTab::Terrain:
+                DrawStudioTerrainToolbar();
+                DrawImportPanel();
+                DrawSculptPanel();
+                break;
+
+            case StudioTab::Objects:
+                DrawStudioObjectsToolbar();
+                DrawScenePanel();
+                DrawDetailsPanel();
+                break;
+
+            case StudioTab::Environment:
+                DrawSpeedTreePanel();
+                DrawSculptPanel();
+                break;
+
+            case StudioTab::Materials:
+                DrawStudioPlaceholderPanel("Materials");
+                break;
+
+            case StudioTab::Collections:
+                DrawStudioPlaceholderPanel("Collections");
+                break;
+
+            case StudioTab::Decorators:
+                DrawStudioPlaceholderPanel("Decorators");
+                break;
+
+            case StudioTab::Roads:
+                DrawStudioPlaceholderPanel("Roads");
+                break;
+
+            case StudioTab::Gameplay:
+                DrawStudioPlaceholderPanel("Gameplay");
+                break;
+
+            case StudioTab::PostFX:
+                DrawStudioPlaceholderPanel("Post FX");
+                break;
+
+            case StudioTab::ColorCorrection:
+                DrawStudioPlaceholderPanel("Color Correction");
+                break;
+
+            default:
+                DrawStudioSettingsOverlay();
+                break;
+        }
+
+        DrawStudioBottomBar();
     }
 }
 
@@ -1501,7 +2152,7 @@ int WINAPI wWinMain(
 
         ImGui::Render();
 
-        const float clearColor[4] = { 0.055f, 0.070f, 0.060f, 1.0f };
+        const float clearColor[4] = { 0.46f, 0.63f, 0.76f, 1.0f };
 
         g_renderer->BeginFrame(clearColor);
 
