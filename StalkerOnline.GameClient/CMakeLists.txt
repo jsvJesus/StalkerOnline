@@ -213,6 +213,9 @@ add_executable(StalkerOnline.LevelEditor WIN32
     src/Editor/Dx11LevelEditorRenderer.h
     src/Editor/Dx11LevelEditorRenderer.cpp
 
+    src/Editor/EditorScene.h
+    src/Editor/EditorScene.cpp
+
     src/Engine/Renderer/Dx11Renderer.h
     src/Engine/Renderer/Dx11Renderer.cpp
 

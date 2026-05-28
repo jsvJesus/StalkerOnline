@@ -3,6 +3,7 @@
 #endif
 
 #include "Editor/Dx11LevelEditorRenderer.h"
+#include "Editor/EditorScene.h"
 #include "Editor/Heightmap.h"
 #include "Engine/Renderer/Dx11Renderer.h"
 #include "SpeedTree/SpeedTreeIntegration.h"
@@ -36,11 +37,13 @@ namespace
 
     StalkerOnline::Editor::Heightmap g_heightmap;
     StalkerOnline::Editor::LevelEditorRenderSettings g_renderSettings;
+    StalkerOnline::Editor::EditorScene g_editorScene;
 
     std::atomic_bool g_running = true;
 
     char g_rawPath[260] = {};
     char g_savePath[260] = {};
+    char g_levelPath[260] = {};
     char g_speedTreeAssetPath[260] = {};
     char g_statusText[512] = "Ready.";
 
@@ -60,6 +63,7 @@ namespace
     float g_heightMax = 1.0f;
 
     StalkerOnline::SpeedTreeIntegration::TreeAssetInfo g_speedTreeAsset;
+    void LoadRawHeightmap(const std::string& path);
 
     StalkerOnline::Editor::RawHeightFormat FormatFromIndex(int index)
     {
@@ -261,6 +265,119 @@ namespace
         return fileName;
     }
 
+    std::string ShowOpenLevelDialog()
+    {
+        char fileName[MAX_PATH] = {};
+
+        OPENFILENAMEA openFileName{};
+        openFileName.lStructSize = sizeof(openFileName);
+        openFileName.hwndOwner = g_windowHandle;
+        openFileName.lpstrFilter =
+            "Stalker Online Level (*.sollevel)\0*.sollevel\0"
+            "All Files (*.*)\0*.*\0";
+        openFileName.lpstrFile = fileName;
+        openFileName.nMaxFile = MAX_PATH;
+        openFileName.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        openFileName.lpstrDefExt = "sollevel";
+
+        if (!GetOpenFileNameA(&openFileName))
+            return {};
+
+        return fileName;
+    }
+
+    std::string ShowSaveLevelDialog()
+    {
+        char fileName[MAX_PATH] = {};
+
+        if (g_levelPath[0] != '\0')
+            std::snprintf(fileName, sizeof(fileName), "%s", g_levelPath);
+
+        OPENFILENAMEA saveFileName{};
+        saveFileName.lStructSize = sizeof(saveFileName);
+        saveFileName.hwndOwner = g_windowHandle;
+        saveFileName.lpstrFilter =
+            "Stalker Online Level (*.sollevel)\0*.sollevel\0"
+            "All Files (*.*)\0*.*\0";
+        saveFileName.lpstrFile = fileName;
+        saveFileName.nMaxFile = MAX_PATH;
+        saveFileName.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+        saveFileName.lpstrDefExt = "sollevel";
+
+        if (!GetSaveFileNameA(&saveFileName))
+            return {};
+
+        return fileName;
+    }
+
+    void SyncSceneTerrainInfo()
+    {
+        const int terrainWidth = g_heightmap.IsValid() ? g_heightmap.GetWidth() : g_rawWidth;
+        const int terrainHeight = g_heightmap.IsValid() ? g_heightmap.GetHeight() : g_rawHeight;
+
+        g_editorScene.SetTerrainInfo(
+            g_rawPath,
+            terrainWidth,
+            terrainHeight,
+            g_renderSettings.CellSizeX,
+            g_renderSettings.CellSizeY,
+            g_renderSettings.HeightScale);
+    }
+
+    void SaveLevelFile(const std::string& path)
+    {
+        if (path.empty())
+        {
+            SetStatus("Save level failed: path is empty.");
+            return;
+        }
+
+        SyncSceneTerrainInfo();
+
+        std::string errorMessage;
+
+        if (!g_editorScene.SaveToFile(path, &errorMessage))
+        {
+            SetStatus("Save level failed: " + errorMessage);
+            return;
+        }
+
+        CopyToBuffer(g_levelPath, sizeof(g_levelPath), path);
+        g_isDirty = false;
+
+        SetStatus("Saved level: " + path);
+    }
+
+    void LoadLevelFile(const std::string& path)
+    {
+        if (path.empty())
+            return;
+
+        std::string errorMessage;
+
+        if (!g_editorScene.LoadFromFile(path, &errorMessage))
+        {
+            SetStatus("Load level failed: " + errorMessage);
+            return;
+        }
+
+        CopyToBuffer(g_levelPath, sizeof(g_levelPath), path);
+
+        g_renderSettings.CellSizeX = g_editorScene.GetTerrainCellSizeX();
+        g_renderSettings.CellSizeY = g_editorScene.GetTerrainCellSizeY();
+        g_renderSettings.HeightScale = g_editorScene.GetTerrainHeightScale();
+        g_ueZScale = g_renderSettings.HeightScale / 512.0f;
+
+        if (!g_editorScene.GetTerrainHeightmapPath().empty())
+        {
+            CopyToBuffer(g_rawPath, sizeof(g_rawPath), g_editorScene.GetTerrainHeightmapPath());
+            LoadRawHeightmap(g_editorScene.GetTerrainHeightmapPath());
+        }
+
+        g_isDirty = false;
+        SetStatus("Loaded level: " + path);
+    }
+
     std::string ShowOpenSpeedTreeDialog()
     {
         char fileName[MAX_PATH] = {};
@@ -295,6 +412,8 @@ namespace
         RefreshHeightStats();
         ResetCameraToHeightmap();
         g_isDirty = true;
+        g_editorScene.Clear();
+        SyncSceneTerrainInfo();
 
         SetStatus(
             "New flat RAW heightmap: " +
@@ -333,6 +452,7 @@ namespace
         RefreshHeightStats();
         ResetCameraToHeightmap();
         g_isDirty = false;
+        SyncSceneTerrainInfo();
 
         SetStatus("Loaded RAW heightmap: " + path);
     }
@@ -355,6 +475,8 @@ namespace
 
         CopyToBuffer(g_savePath, sizeof(g_savePath), path);
         g_isDirty = false;
+        CopyToBuffer(g_rawPath, sizeof(g_rawPath), path);
+        SyncSceneTerrainInfo();
 
         SetStatus("Saved RAW heightmap: " + path);
     }
@@ -449,6 +571,76 @@ namespace
     EditorVector3 CameraUp()
     {
         return Normalize(Cross(CameraForward(), CameraRight()));
+    }
+
+    float HeightForEditorPreview(float rawHeight)
+    {
+        const float clampedRawHeight = std::clamp(rawHeight, 0.0f, 1.0f);
+
+        if (!g_renderSettings.NormalizeHeightPreview)
+            return clampedRawHeight;
+
+        const float minHeight = std::clamp(g_renderSettings.PreviewMinHeight, 0.0f, 1.0f);
+        const float maxHeight = std::clamp(g_renderSettings.PreviewMaxHeight, 0.0f, 1.0f);
+        const float range = maxHeight - minHeight;
+
+        if (range <= 0.000001f)
+            return 0.5f;
+
+        return std::clamp((clampedRawHeight - minHeight) / range, 0.0f, 1.0f);
+    }
+
+    StalkerOnline::Editor::EditorVec3 MakePlacementPosition()
+    {
+        if (g_heightmap.IsValid())
+        {
+            const float centerX = static_cast<float>(g_heightmap.GetWidth() - 1) * 0.5f;
+            const float centerY = static_cast<float>(g_heightmap.GetHeight() - 1) * 0.5f;
+
+            const int sampleX = std::clamp(static_cast<int>(std::round(g_renderSettings.BrushX)), 0, g_heightmap.GetWidth() - 1);
+            const int sampleY = std::clamp(static_cast<int>(std::round(g_renderSettings.BrushY)), 0, g_heightmap.GetHeight() - 1);
+
+            const float rawHeight = g_heightmap.GetHeightNormalized(sampleX, sampleY);
+            const float previewHeight = HeightForEditorPreview(rawHeight);
+
+            return
+            {
+                (g_renderSettings.BrushX - centerX) * g_renderSettings.CellSizeX,
+                (previewHeight - 0.5f) * g_renderSettings.HeightScale,
+                (g_renderSettings.BrushY - centerY) * g_renderSettings.CellSizeY
+            };
+        }
+
+        const EditorVector3 forward = CameraForward();
+
+        return
+        {
+            g_renderSettings.CameraX + forward.X * 800.0f,
+            g_renderSettings.CameraY + forward.Y * 800.0f,
+            g_renderSettings.CameraZ + forward.Z * 800.0f
+        };
+    }
+
+    void AddEditorObjectAtBrush(
+        StalkerOnline::Editor::EditorObjectType type,
+        const std::string& name,
+        const std::string& assetPath,
+        float radius)
+    {
+        StalkerOnline::Editor::EditorObject object;
+        object.Type = type;
+        object.Name = name;
+        object.AssetPath = assetPath;
+        object.Position = MakePlacementPosition();
+        object.Radius = radius;
+        object.Scale = { 1.0f, 1.0f, 1.0f };
+
+        const std::uint32_t objectId = g_editorScene.AddObject(object);
+        g_editorScene.SelectObject(objectId);
+
+        g_isDirty = true;
+
+        SetStatus("Added object: " + name);
     }
 
     bool ScreenToHeightmap(
@@ -662,6 +854,43 @@ namespace
 
             if (!path.empty())
                 SaveRawHeightmap(path);
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Open Level"))
+        {
+            const std::string path = ShowOpenLevelDialog();
+
+            if (!path.empty())
+                LoadLevelFile(path);
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Save Level"))
+        {
+            if (g_levelPath[0] != '\0')
+            {
+                SaveLevelFile(g_levelPath);
+            }
+            else
+            {
+                const std::string path = ShowSaveLevelDialog();
+
+                if (!path.empty())
+                    SaveLevelFile(path);
+            }
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Save Level As"))
+        {
+            const std::string path = ShowSaveLevelDialog();
+
+            if (!path.empty())
+                SaveLevelFile(path);
         }
 
         ImGui::SameLine();
@@ -884,12 +1113,217 @@ namespace
         ImGui::End();
     }
 
+    void DrawScenePanel()
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + 16.0f, viewport->Pos.y + 444.0f));
+        ImGui::SetNextWindowSize(ImVec2(360.0f, 380.0f));
+
+        ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoCollapse);
+
+        if (ImGui::Button("Add Cube"))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::StaticMeshProxy,
+                "Static Mesh Proxy",
+                "",
+                100.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Add Spawn"))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::PlayerSpawn,
+                "Player Spawn",
+                "",
+                100.0f);
+        }
+
+        if (ImGui::Button("Add Loot"))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::LootSpawner,
+                "Loot Spawner",
+                "",
+                100.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Add Tree Proxy"))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::SpeedTreeProxy,
+                "SpeedTree Proxy",
+                g_speedTreeAssetPath,
+                100.0f);
+        }
+
+        if (ImGui::Button("Add Safe Zone"))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::SafeZone,
+                "Safe Zone",
+                "",
+                600.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Add Rad Zone"))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::RadiationZone,
+                "Radiation Zone",
+                "",
+                600.0f);
+        }
+
+        if (ImGui::Button("Add Anomaly"))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::AnomalyZone,
+                "Anomaly Zone",
+                "",
+                250.0f);
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Add Light"))
+        {
+            AddEditorObjectAtBrush(
+                StalkerOnline::Editor::EditorObjectType::Light,
+                "Light",
+                "",
+                100.0f);
+        }
+
+        ImGui::Separator();
+
+        ImGui::Text("Objects: %d", static_cast<int>(g_editorScene.GetObjects().size()));
+
+        ImGui::BeginChild("##SceneObjectsList", ImVec2(0.0f, 0.0f), true);
+
+        for (const StalkerOnline::Editor::EditorObject& object : g_editorScene.GetObjects())
+        {
+            char label[256]{};
+
+            std::snprintf(
+                label,
+                sizeof(label),
+                "#%u %s - %s",
+                object.Id,
+                StalkerOnline::Editor::EditorObjectTypeToText(object.Type),
+                object.Name.c_str());
+
+            const bool selected = object.Id == g_editorScene.GetSelectedObjectId();
+
+            if (ImGui::Selectable(label, selected))
+                g_editorScene.SelectObject(object.Id);
+        }
+
+        ImGui::EndChild();
+
+        ImGui::End();
+    }
+
+    void DrawDetailsPanel()
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        const float width = 350.0f;
+
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x - width - 16.0f, viewport->Pos.y + 680.0f));
+        ImGui::SetNextWindowSize(ImVec2(width, 205.0f));
+
+        ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoCollapse);
+
+        StalkerOnline::Editor::EditorObject* selectedObject =
+            g_editorScene.GetSelectedObjectMutable();
+
+        if (selectedObject == nullptr)
+        {
+            ImGui::TextColored(ImVec4(0.74f, 0.70f, 0.52f, 1.0f), "No object selected.");
+            ImGui::End();
+            return;
+        }
+
+        ImGui::Text("Selected ID: %u", selectedObject->Id);
+
+        char nameBuffer[128]{};
+        std::snprintf(nameBuffer, sizeof(nameBuffer), "%s", selectedObject->Name.c_str());
+
+        if (ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer)))
+        {
+            selectedObject->Name = nameBuffer;
+            g_isDirty = true;
+        }
+
+        const char* types[]
+        {
+            "Static Mesh Proxy",
+            "SpeedTree Proxy",
+            "Player Spawn",
+            "Loot Spawner",
+            "Safe Zone",
+            "Radiation Zone",
+            "Anomaly Zone",
+            "Light"
+        };
+
+        int typeIndex = static_cast<int>(selectedObject->Type);
+
+        if (ImGui::Combo("Type", &typeIndex, types, IM_ARRAYSIZE(types)))
+        {
+            typeIndex = std::clamp(typeIndex, 0, static_cast<int>(IM_ARRAYSIZE(types)) - 1);
+            selectedObject->Type = static_cast<StalkerOnline::Editor::EditorObjectType>(typeIndex);
+            g_isDirty = true;
+        }
+
+        char assetBuffer[260]{};
+        std::snprintf(assetBuffer, sizeof(assetBuffer), "%s", selectedObject->AssetPath.c_str());
+
+        if (ImGui::InputText("Asset", assetBuffer, sizeof(assetBuffer)))
+        {
+            selectedObject->AssetPath = assetBuffer;
+            g_isDirty = true;
+        }
+
+        if (ImGui::DragFloat3("Position", &selectedObject->Position.X, 10.0f, -10000000.0f, 10000000.0f, "%.1f"))
+            g_isDirty = true;
+
+        if (ImGui::DragFloat3("Rotation", &selectedObject->Rotation.X, 0.5f, -3600.0f, 3600.0f, "%.1f"))
+            g_isDirty = true;
+
+        if (ImGui::DragFloat3("Scale", &selectedObject->Scale.X, 0.01f, 0.01f, 1000.0f, "%.2f"))
+            g_isDirty = true;
+
+        if (ImGui::DragFloat("Radius", &selectedObject->Radius, 5.0f, 1.0f, 100000.0f, "%.1f"))
+            g_isDirty = true;
+
+        if (ImGui::Checkbox("Visible", &selectedObject->Visible))
+            g_isDirty = true;
+
+        if (ImGui::Button("Delete Selected"))
+        {
+            g_editorScene.RemoveSelectedObject();
+            g_isDirty = true;
+        }
+
+        ImGui::End();
+    }
+
     void DrawEditorUi()
     {
         DrawTopToolbar();
         DrawImportPanel();
+        DrawScenePanel();
         DrawSculptPanel();
         DrawSpeedTreePanel();
+        DrawDetailsPanel();
     }
 }
 
@@ -1076,7 +1510,8 @@ int WINAPI wWinMain(
             g_renderer->GetWidth(),
             g_renderer->GetHeight(),
             g_heightmap,
-            g_renderSettings);
+            g_renderSettings,
+            g_editorScene);
 
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 

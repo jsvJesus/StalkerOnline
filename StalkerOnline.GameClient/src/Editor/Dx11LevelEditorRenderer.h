@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Editor/EditorScene.h"
 #include "Editor/Heightmap.h"
 
 #include <d3d11.h>
@@ -55,7 +56,8 @@ namespace StalkerOnline::Editor
             std::uint32_t viewportWidth,
             std::uint32_t viewportHeight,
             const Heightmap& heightmap,
-            const LevelEditorRenderSettings& settings);
+            const LevelEditorRenderSettings& settings,
+            const EditorScene& scene);
 
     public:
         struct Vertex

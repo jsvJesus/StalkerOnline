@@ -370,6 +370,186 @@ namespace StalkerOnline::Editor
             }
         }
 
+        Color ObjectColor(EditorObjectType type)
+        {
+            switch (type)
+            {
+                case EditorObjectType::StaticMeshProxy:
+                    return { 0.45f, 0.55f, 0.70f, 1.0f };
+
+                case EditorObjectType::SpeedTreeProxy:
+                    return { 0.25f, 0.70f, 0.25f, 1.0f };
+
+                case EditorObjectType::PlayerSpawn:
+                    return { 0.25f, 0.65f, 1.0f, 1.0f };
+
+                case EditorObjectType::LootSpawner:
+                    return { 0.95f, 0.75f, 0.25f, 1.0f };
+
+                case EditorObjectType::SafeZone:
+                    return { 0.20f, 0.85f, 0.55f, 1.0f };
+
+                case EditorObjectType::RadiationZone:
+                    return { 0.80f, 0.95f, 0.20f, 1.0f };
+
+                case EditorObjectType::AnomalyZone:
+                    return { 0.80f, 0.25f, 1.0f, 1.0f };
+
+                case EditorObjectType::Light:
+                    return { 1.0f, 0.92f, 0.50f, 1.0f };
+
+                default:
+                    return { 1.0f, 1.0f, 1.0f, 1.0f };
+            }
+        }
+
+        Float3 ObjectHalfSize(const EditorObject& object)
+        {
+            const float radius = (std::max)(1.0f, object.Radius);
+
+            switch (object.Type)
+            {
+                case EditorObjectType::StaticMeshProxy:
+                    return { 125.0f, 125.0f, 125.0f };
+
+                case EditorObjectType::SpeedTreeProxy:
+                    return { 90.0f, 420.0f, 90.0f };
+
+                case EditorObjectType::PlayerSpawn:
+                    return { 45.0f, 90.0f, 45.0f };
+
+                case EditorObjectType::LootSpawner:
+                    return { 65.0f, 45.0f, 65.0f };
+
+                case EditorObjectType::SafeZone:
+                case EditorObjectType::RadiationZone:
+                    return { radius, 60.0f, radius };
+
+                case EditorObjectType::AnomalyZone:
+                    return { radius, 120.0f, radius };
+
+                case EditorObjectType::Light:
+                    return { 40.0f, 40.0f, 40.0f };
+
+                default:
+                    return { 100.0f, 100.0f, 100.0f };
+            }
+        }
+
+        Float3 TransformObjectPoint(const Float3& localPoint, const EditorObject& object)
+        {
+            const DirectX::XMMATRIX transform =
+                DirectX::XMMatrixScaling(
+                    object.Scale.X,
+                    object.Scale.Y,
+                    object.Scale.Z) *
+                DirectX::XMMatrixRotationRollPitchYaw(
+                    DegToRad(object.Rotation.X),
+                    DegToRad(object.Rotation.Y),
+                    DegToRad(object.Rotation.Z)) *
+                DirectX::XMMatrixTranslation(
+                    object.Position.X,
+                    object.Position.Y,
+                    object.Position.Z);
+
+            const DirectX::XMVECTOR localVector = DirectX::XMVectorSet(
+                localPoint.X,
+                localPoint.Y,
+                localPoint.Z,
+                1.0f);
+
+            const DirectX::XMVECTOR worldVector =
+                DirectX::XMVector3TransformCoord(localVector, transform);
+
+            DirectX::XMFLOAT3 result{};
+            DirectX::XMStoreFloat3(&result, worldVector);
+
+            return { result.x, result.y, result.z };
+        }
+
+        void AddObjectBox(
+            std::vector<Dx11LevelEditorRenderer::Vertex>& lineVertices,
+            const EditorObject& object,
+            const Color& color)
+        {
+            const Float3 halfSize = ObjectHalfSize(object);
+
+            const Float3 localCorners[8]
+            {
+                { -halfSize.X, -halfSize.Y, -halfSize.Z },
+                {  halfSize.X, -halfSize.Y, -halfSize.Z },
+                {  halfSize.X, -halfSize.Y,  halfSize.Z },
+                { -halfSize.X, -halfSize.Y,  halfSize.Z },
+
+                { -halfSize.X,  halfSize.Y, -halfSize.Z },
+                {  halfSize.X,  halfSize.Y, -halfSize.Z },
+                {  halfSize.X,  halfSize.Y,  halfSize.Z },
+                { -halfSize.X,  halfSize.Y,  halfSize.Z }
+            };
+
+            Float3 corners[8]{};
+
+            for (int i = 0; i < 8; ++i)
+                corners[i] = TransformObjectPoint(localCorners[i], object);
+
+            const int edges[12][2]
+            {
+                { 0, 1 },
+                { 1, 2 },
+                { 2, 3 },
+                { 3, 0 },
+
+                { 4, 5 },
+                { 5, 6 },
+                { 6, 7 },
+                { 7, 4 },
+
+                { 0, 4 },
+                { 1, 5 },
+                { 2, 6 },
+                { 3, 7 }
+            };
+
+            for (const auto& edge : edges)
+                AddLine(lineVertices, corners[edge[0]], corners[edge[1]], color);
+
+            const Float3 objectCenter
+            {
+                object.Position.X,
+                object.Position.Y,
+                object.Position.Z
+            };
+
+            const Float3 objectTop
+            {
+                object.Position.X,
+                object.Position.Y + halfSize.Y * object.Scale.Y,
+                object.Position.Z
+            };
+
+            AddLine(lineVertices, objectCenter, objectTop, color);
+        }
+
+        void BuildSceneObjectVertices(
+            std::vector<Dx11LevelEditorRenderer::Vertex>& lineVertices,
+            const EditorScene& scene)
+        {
+            const std::uint32_t selectedObjectId = scene.GetSelectedObjectId();
+
+            for (const EditorObject& object : scene.GetObjects())
+            {
+                if (!object.Visible)
+                    continue;
+
+                Color color = ObjectColor(object.Type);
+
+                if (object.Id == selectedObjectId)
+                    color = { 1.0f, 0.90f, 0.20f, 1.0f };
+
+                AddObjectBox(lineVertices, object, color);
+            }
+        }
+
         void DebugOutputBlob(ID3DBlob* blob)
         {
             if (blob == nullptr)
@@ -471,7 +651,8 @@ namespace StalkerOnline::Editor
         std::uint32_t viewportWidth,
         std::uint32_t viewportHeight,
         const Heightmap& heightmap,
-        const LevelEditorRenderSettings& settings)
+        const LevelEditorRenderSettings& settings,
+        const EditorScene& scene)
     {
         if (!m_initialized || deviceContext == nullptr || viewportWidth == 0 || viewportHeight == 0)
             return;
@@ -495,7 +676,7 @@ namespace StalkerOnline::Editor
         deviceContext->PSSetShader(m_pixelShader.Get(), nullptr, 0);
         deviceContext->IASetInputLayout(m_inputLayout.Get());
 
-        ID3D11Buffer* cameraBuffers[] =
+        ID3D11Buffer* cameraBuffers[]
         {
             m_cameraConstantBuffer.Get()
         };
@@ -525,6 +706,7 @@ namespace StalkerOnline::Editor
         BuildTerrainVertices(triangleVertices, lineVertices, heightmap, settings);
         AddReferenceGrid(lineVertices, heightmap, settings);
         AddBrushCircle(lineVertices, heightmap, settings);
+        BuildSceneObjectVertices(lineVertices, scene);
 
         UploadAndDraw(
             deviceContext,
@@ -542,36 +724,36 @@ namespace StalkerOnline::Editor
     bool Dx11LevelEditorRenderer::CreateShaders(ID3D11Device* device)
     {
         static const char* shaderCode = R"(
-cbuffer CameraBuffer : register(b0)
-{
-    matrix ViewProjection;
-};
+            cbuffer CameraBuffer : register(b0)
+            {
+                matrix ViewProjection;
+            };
 
-struct VS_INPUT
-{
-    float3 Position : POSITION;
-    float4 Color    : COLOR0;
-};
+            struct VS_INPUT
+            {
+                float3 Position : POSITION;
+                float4 Color    : COLOR0;
+            };
 
-struct PS_INPUT
-{
-    float4 Position : SV_POSITION;
-    float4 Color    : COLOR0;
-};
+            struct PS_INPUT
+            {
+                float4 Position : SV_POSITION;
+                float4 Color    : COLOR0;
+            };
 
-PS_INPUT VSMain(VS_INPUT input)
-{
-    PS_INPUT output;
-    output.Position = mul(ViewProjection, float4(input.Position, 1.0f));
-    output.Color = input.Color;
-    return output;
-}
+            PS_INPUT VSMain(VS_INPUT input)
+            {
+                PS_INPUT output;
+                output.Position = mul(ViewProjection, float4(input.Position, 1.0f));
+                output.Color = input.Color;
+                return output;
+            }
 
-float4 PSMain(PS_INPUT input) : SV_TARGET
-{
-    return input.Color;
-}
-)";
+            float4 PSMain(PS_INPUT input) : SV_TARGET
+            {
+                return input.Color;
+            }
+        )";
 
         Microsoft::WRL::ComPtr<ID3DBlob> vertexShaderBlob;
         Microsoft::WRL::ComPtr<ID3DBlob> pixelShaderBlob;
